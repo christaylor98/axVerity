@@ -1,0 +1,21 @@
+// sh_accept_step — one step of a connection thread's accept loop: accept one
+// connection and serve it to completion (sh_serve_conn) before this thread
+// accepts the next.
+//
+// Concurrency (AXVERITY_SHIM_CONCURRENT_CONNS_V1): this step is not serial
+// across the process. sh_acceptor runs this loop on several threads that share
+// one listener, and the kernel hands each accept to one of them, so other
+// connections are served concurrently while this thread is busy with one. A
+// single thread still serves its own connection to exhaustion.
+//
+// Requests are not executed in parallel: each thread forwards frames to the
+// single index thread (sh-idx channel, see sh_serve_step / sh_index_step),
+// which answers them one at a time in arrival order. So an ADMIT holds up
+// other clients' replies even though their connections are open (contract §5.4).
+// This replaces the older text that said §5.5 concurrency was not delivered.
+fn sh_accept_step(sptr: Int) -> Int {
+  let lis  = mem_read_int_raw(sptr, Int(0))
+  let conn = tcp_accept(lis)
+  let _s   = sh_serve_conn(sptr, conn)
+  int_add(sptr, Int(0))
+}

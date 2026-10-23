@@ -1,0 +1,14 @@
+// rt_insert_names — ingest one triple given as three names. Resolves each name
+// through the W1 index (get-or-insert, so a repeated name is the same entity
+// and does NOT supersede itself), then indexes the resulting ids.
+//
+// This is the read tier's whole ingestion surface, and it is called by the
+// driver, never by the write path. UNWIRED_BY_DESIGN: there is no tap from the
+// wp_* pipeline to call it, and adding one is a later intent's work.
+fn rt_insert_names(s: Text, v: Text, t: Text) -> Int {
+  let si = rt_nidx_resolve(s)
+  let vi = rt_nidx_resolve(v)
+  let ti = rt_nidx_resolve(t)
+  let r  = rt_index_triple(si, vi, ti)
+  int_add(r, Int(0))
+}

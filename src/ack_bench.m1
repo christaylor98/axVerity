@@ -1,0 +1,27 @@
+// ack_bench — 5th --entries thread, AXVERITY_WATERMARK_ACK_V1. Not part
+// of the write-dispatch pipeline itself (mem_controller never talks to
+// it, disk_controller never talks to it) — an independent, opt-in
+// caller exercising and benchmarking wp_wait_durable end to end. Reads
+// the durable-watermark cell handle flusher published once
+// (wp-durable-cell-pub), re-publishes it on its own self-mailbox
+// (wp-ackbench-cell) for wp_ack_bench_step to take+put-back every
+// iteration, then drives an exact-N loop_count timing one
+// wp_wait_durable(cell, seq) call per block via wp_ack_bench_step.
+// Results land in .axverity-store/ack-bench.csv.
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1: both the block count and the FIRST block
+// id now arrive on channels. The count because under F1v it is not derivable
+// from the input's size; the first id because B1 seeds the run from max+1 over
+// the durable store, so sequence numbers are absolute and a run that starts at
+// 0 is only the very first one. Waiting for targets 0..n-1 on a restarted
+// store would return instantly for every already-durable id and then block
+// forever on one that this run never mints.
+fn ack_bench_main(argv: TextList) -> Unit {
+  let cell  = bchan_take(Text("wp-durable-cell-pub"))
+  let _pub  = bchan_send(Text("wp-ackbench-cell"), cell)
+  let first = bchan_take(Text("wp-first-seq-pub"))
+  let acell = bchan_take(Text("wp-ack-final-pub"))
+  let fs    = chr(Int(28))
+  let init  = str_concat(int_to_str(first), str_concat(fs, int_to_str(acell)))
+  let _done = loop_while(init, wp_ack_more, wp_ack_bench_step, Int(1000000000))
+  Unit()
+}

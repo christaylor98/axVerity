@@ -1,0 +1,38 @@
+// rt_bench_all — the W5 measurement run at one population.
+//
+// ORDER MATTERS, and getting it wrong produced a false result once already.
+// An earlier version ran the isolated name-index sweep first and printed the
+// triple count via a full enumeration, both BEFORE the pattern timings. Each
+// of those allocates and frees ~n entries, and the pattern timings that
+// followed measured the resulting heap as much as the structures: S?? read
+// 272 us/op at 1M and 46 us/op at 10k, which looks exactly like a superlinear
+// descent and is not one. The `locality` control — same population, same
+// query, no prelude — gives 47 us/op at 1M. So:
+//
+//   populate, then the six constant-answer patterns, and only then anything
+//   that allocates at population scale.
+//
+// The two result-proportional patterns (mask 2 = verb bound, mask 0 = nothing
+// bound) return n/7 and n triples per call, so they run few reps and are read
+// as ns_per_result. Mask 0's result_card is also the triple count, so no
+// separate enumeration is needed. The name-index sweep runs last because it
+// resets the name index.
+fn rt_bench_all(n: Int) -> Int {
+  let _h  = io_println(str_concat(Text("population="), int_to_str(n)))
+  let _r  = rt_reset_all(Unit())
+  let _p  = rt_populate(n)
+  let _e  = io_println(str_concat(Text("entities="), int_to_str(rt_nidx_distinct(Unit()))))
+
+  let _q1 = rt_bench_pattern(Int(1), n, Int(1000))   // S??
+  let _q4 = rt_bench_pattern(Int(4), n, Int(1000))   // ??T
+  let _q3 = rt_bench_pattern(Int(3), n, Int(1000))   // SV?
+  let _q6 = rt_bench_pattern(Int(6), n, Int(1000))   // ?VT
+  let _q5 = rt_bench_pattern(Int(5), n, Int(1000))   // S?T
+  let _q7 = rt_bench_pattern(Int(7), n, Int(1000))   // SVT
+
+  let _q2 = rt_bench_pattern(Int(2), n, Int(20))     // ?V?  result-proportional
+  let _q0 = rt_bench_pattern(Int(0), n, Int(3))      // ???  result-proportional
+
+  let _b1 = rt_bench_nidx(n)                         // last: resets the index
+  int_add(Int(0), Int(0))
+}

@@ -1,0 +1,29 @@
+# AXVERITY_FORMAT_LAND_AND_WIRE_V1 — write-path hashes AFTER the P2 single touch.
+# The P0 baseline is preserved in write-path-hashes.txt; the diff between the
+# two IS the report of what the single touch changed. From here to P4 these
+# must not move: ONE_TOUCH_THEN_WIRE means P3 wires the read tier WITHOUT a
+# second write-path touch, and this file is what proves it.
+# 22 files now (15 baseline + 7 added by P2). Verify with check-hashes.sh.
+# sha256  path
+390cd55daa67eafbb1dec01f018b2d442f053a444f7783ab5a24022bfed7f9ea  lib/wp_ack_bench_step.m1
+7745b0980db46a25d2e7bfae0e490435ec2cc8d379000710ab917b5ff851e819  lib/wp_bid_parse.m1
+89ef574b5678c31513601802298d85fbccd2ab5edb210f3b94caed231aa46cfb  lib/wp_bid_resolve.m1
+829d19c85659977a3f469b29fd7d61ae2be3885f0f4ede79ac45d4243a3ab80e  lib/wp_bid_scan_step.m1
+7b1d161b017423e588d5b44e71a635a5628452de092ba55368025aba823e1a72  lib/wp_block_capacity.m1
+65b2a3fd119db35a6ae27d215f83ba11de8829fed6611bd736ef525e4c48ef57  lib/wp_count_step.m1
+8e7db074fcb8b1adc8c79cdd252d9ef338bccf282bd7d2165d463e88d4c1b3d0  lib/wp_disk_controller_step.m1
+f52a4aada3336a79ac6a3666e950a3b7d953cadabb27a32673fbf7dbf5b1ad57  lib/wp_flusher_step.m1
+a7a9935bf27494d5b28f71ce4617e009e79bd034fd9c5ddeeb9def5aa2b2a72d  lib/wp_flush_tail.m1
+87a5d9d8fa3054ebe60987471adf09a1800cde173d7c2275c1e27521a4e5ebb9  lib/wp_footer_size.m1
+3d62ef8928fcaf6f9065e6ea67950a5d3fa75287baf5207877d93ddcca33aa06  lib/wp_mem_controller_step.m1
+487af161a0c4f14af28f25f891d6894918e34b65fa895d609cfe06f4777ccfe6  lib/wp_seal_stream.m1
+7f72afbe99129c5f9a5617091c7598e81373222cb77f15dde5eb4007c9e59a30  lib/wp_stream_threshold.m1
+8f9da480ae62296e504c744b483a38e601f987203f4e521a0e48fa95bdba662f  lib/wp_wait_durable.m1
+7923916232668638bddcd3be0be2d6662888c697a9a7d2ed6cb9bf2d29a1b950  lib/wp_wait_durable_more.m1
+ffff7183bc8d9adcb2221b2c5a68209289df4f2773cf53de47f6f727c06f855e  lib/wp_wait_durable_step.m1
+da839ca41fb6f04d431753407b2a7e10cdc2a5ca7ef9d775441edcabb914f95f  lib/wp_write_step.m1
+a16beb3d1a59fd32ab3d2a181c2d5ff5707673e1f9057d64d360ffdb339fb238  src/ack_bench.m1
+d6eb5916cf1f31579dbfa83e961cae1f1fca2306ad16468db66773588b20d423  src/disk_controller.m1
+383ab2237914cce4122f13c950c179f87f08064536a434234cdb117338ec11ee  src/flusher.m1
+3d7c3108eb7744ebfe333b89dbea8ca9cfba856ec9ae3e8a0cd667ea7664f4ff  src/hot_mem_write.m1
+6822b098cad76f5b330989d67f8d950fd852f618b834c6a9b20f79e566260e12  src/mem_controller.m1

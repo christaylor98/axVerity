@@ -1,0 +1,28 @@
+// rt_bench_pattern — time `reps` queries of one binding pattern and print
+// ns/op, the answer size, and ns per result element.
+//
+// MEASURE_IN_THE_SHIPPING_SUBSTRATE: this is M1 running through the real
+// bridge against the real structures, not a Rust model of them. The precedent
+// for insisting is the resolve that measured 33 ms in Rust and 369 s in M1.
+fn rt_bench_pattern(mask: Int, n: Int, reps: Int) -> Int {
+  let _m = map_put(Text("rt:bench"), Text("mask"), int_to_str(mask))
+  let _n = map_put(Text("rt:bench"), Text("n"), int_to_str(n))
+  let _s = map_put(Text("rt:bench"), Text("span"), int_to_str(reps))
+  let t0 = now_unix_nanos(Unit())
+  let _f = foreach(range(Int(0), reps), rt_bench_step)
+  let t1 = now_unix_nanos(Unit())
+  let el = int_sub(t1, t0)
+  let cd = rt_out_count(Unit())
+  let _p = io_println(
+    str_concat(Text("pattern mask="),
+      str_concat(int_to_str(mask),
+        str_concat(Text(" reps="),
+          str_concat(int_to_str(reps),
+            str_concat(Text(" ns_per_op="),
+              str_concat(int_to_str(int_div(el, int_max(reps, Int(1)))),
+                str_concat(Text(" result_card="),
+                  str_concat(int_to_str(cd),
+                    str_concat(Text(" ns_per_result="),
+                      int_to_str(int_div(el, int_max(int_mul(reps, cd), Int(1))))))))))))))
+  int_add(Int(0), Int(0))
+}

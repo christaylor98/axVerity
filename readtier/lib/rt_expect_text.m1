@@ -1,0 +1,16 @@
+// rt_expect_text — the Text counterpart of rt_expect_int. Same contract:
+// prints, returns 0 on pass and 1 on fail.
+fn rt_expect_text(label: Text, got: Text, want: Text) -> Int {
+  let ok = str_eq(got, want)
+  let _p = if ok {
+    io_println(str_concat(Text("  PASS  "), label))
+  } else {
+    io_println(str_concat(Text("  FAIL  "),
+      str_concat(label,
+        str_concat(Text("   got='"),
+          str_concat(got,
+            str_concat(Text("' want='"), str_concat(want, Text("'"))))))))
+  }
+  let r = if ok { int_add(Int(0), Int(0)) } else { int_add(Int(1), Int(0)) }
+  int_add(r, Int(0))
+}

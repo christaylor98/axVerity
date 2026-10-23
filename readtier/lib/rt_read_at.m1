@@ -1,0 +1,14 @@
+// rt_read_at — the bytes at a byte range of a durable block, as Text.
+//
+// Split out from rt_read_rid because the scan that FINDS a record frees the
+// staged block before returning, and reaching into freed memory to build the
+// answer would be a use-after-free that happens to work most of the time. This
+// re-reads the range instead, which costs one fs_read_range and is honest
+// about the lifetime.
+//
+// fs_read_range reads only the record's own bytes, not the block, so a point
+// read does not pay for the block it happens to live in beyond finding it.
+fn rt_read_at(path: Text, off: Int, len: Int) -> Text {
+  let b = fs_read_range(path, off, len)
+  bytes_to_text(b)
+}

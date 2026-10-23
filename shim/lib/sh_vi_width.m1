@@ -1,0 +1,36 @@
+// sh_vi_width — how many bytes the LEB128 varint at `off` occupies, or 0 if
+// the buffer does not yet hold all of it.
+//
+// The wire uses the SAME length prefix as the durable format (contract T5:
+// "one encoding in the project, not two"), so this is F1v's decoder on a
+// socket instead of on a block. It is unrolled rather than looped because a
+// loop needs a threaded state pointer and the answer is bounded at 5 groups —
+// 2^35, four orders of magnitude past the frame cap in sh_recv_step.
+//
+// Returning 0 for "incomplete" is what makes the read loop restartable: a
+// varint split across two TCP segments is a normal event, not an error, and
+// the caller simply reads again.
+fn sh_vi_width(b: Bytes, off: Int) -> Int {
+  let n = bytes_len(b)
+  let w = if int_gte(off, n) { Int(0) } else {
+    if int_lt(bytes_get(b, off), Int(128)) { Int(1) } else {
+      if int_gte(int_add(off, Int(1)), n) { Int(0) } else {
+        if int_lt(bytes_get(b, int_add(off, Int(1))), Int(128)) { Int(2) } else {
+          if int_gte(int_add(off, Int(2)), n) { Int(0) } else {
+            if int_lt(bytes_get(b, int_add(off, Int(2))), Int(128)) { Int(3) } else {
+              if int_gte(int_add(off, Int(3)), n) { Int(0) } else {
+                if int_lt(bytes_get(b, int_add(off, Int(3))), Int(128)) { Int(4) } else {
+                  if int_gte(int_add(off, Int(4)), n) { Int(0) } else {
+                    if int_lt(bytes_get(b, int_add(off, Int(4))), Int(128)) { Int(5) }
+                    else { int_sub(Int(0), Int(1)) }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  int_add(w, Int(0))
+}

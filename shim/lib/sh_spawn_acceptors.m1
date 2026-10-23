@@ -1,0 +1,7 @@
+// sh_spawn_acceptors — start SH_ACCEPTORS = 16 connection threads on listener `lis`
+// (AXVERITY_SHIM_CONCURRENT_CONNS_V1): up to 16 clients connected at once, each served on its own
+// thread; more wait in the kernel backlog as every client did before. Returns 16.
+fn sh_spawn_acceptors(lis: Int) -> Int {
+  let _l = loop_while(str_concat(int_to_str(lis), str_concat(chr(Int(9)), Text("0"))), sh_spawn_more, sh_spawn_step, Int(100))
+  Int(16)
+}

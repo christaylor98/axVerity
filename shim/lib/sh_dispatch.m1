@@ -1,0 +1,37 @@
+// sh_dispatch — dispatch ONE received frame (AXVERITY_SHIM_CONCURRENT_CONNS_V1, 2026-10-19). This is the
+// op half of what sh_serve_step did inline, moved unchanged onto the INDEX thread: the frame's bytes are
+// already in this thread's buffer (sptr slot 16) with header width `hdrw` and payload length `plen`
+// (> 0). Replies go through sh_reply/sh_send to slot 8's conn, which on the index thread is NEGATIVE --
+// the waiting connection thread's mailbox -- so sh_send collects them into the reply buffer instead of
+// writing a socket (see sh_send). The op set, the UTF-8 check and every reply are exactly as before;
+// sh_serve_step's header comment still documents them.
+fn sh_dispatch(sptr: Int, plen: Int, hdrw: Int) -> Int {
+  let conn = mem_read_int_raw(sptr, Int(8))
+  let buf  = mem_read_int_raw(sptr, Int(16))
+  let op   = sh_byte_at(buf, hdrw)
+  let boff = int_add(hdrw, Int(1))
+  let blen = int_sub(plen, Int(1))
+
+  let textop = bool_not(int_eq(op, Int(3)))
+  let badu   = if textop { bool_not(bytes_is_utf8(mem_read_raw(buf, boff, blen))) }
+               else     { Bool(false) }
+  let _mu    = if badu { sh_reply(conn, Int(1), Text("MALFORMED body is not valid UTF-8")) }
+               else    { io_print(Text("")) }
+
+  let serve = bool_not(badu)
+  let btxt  = if bool_and(textop, bool_not(badu)) { bytes_to_text(mem_read_raw(buf, boff, blen)) }
+              else                                { Text("") }
+
+  let _q = if bool_and(serve, int_eq(op, Int(1))) { sh_query(sptr, btxt) }
+           else                                   { Int(0) }
+  let _b = if bool_and(serve, int_eq(op, Int(2))) { sh_rebuild(sptr) }
+           else                                   { Int(0) }
+  let _a = if bool_and(serve, int_eq(op, Int(3))) { sh_admit(sptr, hdrw, plen) }
+           else                                   { Int(0) }
+
+  let known = bool_and(int_gte(op, Int(1)), int_lte(op, Int(3)))
+  let _u = if bool_and(serve, bool_not(known)) {
+             sh_reply(conn, Int(1), str_concat(Text("UNKNOWN opcode "), int_to_str(op)))
+           } else { io_print(Text("")) }
+  int_add(sptr, Int(0))
+}

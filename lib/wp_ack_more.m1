@@ -1,0 +1,14 @@
+// wp_ack_more — loop_while condition for ack_bench: keep measuring while the
+// next seq is still within the run.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. state = "<seq> FS <final-cell handle>".
+// The cell is seeded at 1000000000 by the flusher and set to the run's last
+// durable seq at end of stream, so this is true throughout the run and false
+// one step after the last block has been measured — no separate "finished"
+// flag, and no channel message that reading would consume.
+fn wp_ack_more(state: Text) -> Bool {
+  let fs    = chr(Int(28))
+  let seq   = str_to_int(str_before(state, fs))
+  let acell = str_to_int(str_after(state, fs))
+  int_lte(seq, cell_load_raw(acell))
+}

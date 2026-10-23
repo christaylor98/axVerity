@@ -1,0 +1,13 @@
+// rt_sc_more — loop_while's condition for the range scan: is the cursor still
+// inside [start, end)?
+//
+// The bound came out of two binary searches and is a record index, so the scan
+// touches exactly as many records as there are results. Nothing walks a
+// sibling set, and no descent state exists to clobber — the old three-level
+// context (l2x / l3x / l3y in a named map) has no counterpart here because
+// there are no levels.
+fn rt_sc_more(p: Int) -> Bool {
+  let cur = mem_read_int_raw(p, Int(80))
+  let en  = mem_read_int_raw(p, Int(72))
+  int_lt(cur, en)
+}

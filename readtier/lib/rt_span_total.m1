@@ -1,0 +1,26 @@
+// rt_span_total — the byte length of the spanning record that begins at block
+// `blk` of `stream`, derived by walking the chain's footers.
+//
+// The read side's answer to the fact that NOTHING STORES A SPANNING RECORD'S
+// LENGTH. That is the design, not an omission: a stored total would have to be
+// expressible in the frame, and the three-byte prefix stops at 2097151, which
+// is the ceiling record spanning exists to get out from under. So the length is
+// derived, here, by the same walk rt_span_index does — one 8-byte read per
+// block in the chain (rt_span_footer).
+//
+// It owns its own scratch rather than borrowing a caller's, because its two
+// callers are point reads with no scratch of their own, and sharing rt_dscan's
+// would couple a read to whatever a rebuild happened to leave in it.
+fn rt_span_total(stream: Int, blk: Int) -> Int {
+  let res  = mem_reserve_raw(Int(256))
+  let sptr = tuple_field(res, Int(0))
+  let _z0 = mem_write_int_raw(sptr, Int(112), stream)
+  let _z1 = mem_write_int_raw(sptr, Int(128), rt_rid_stride(Unit()))
+  let _z2 = mem_write_int_raw(sptr, Int(152), Int(0))
+  let _z3 = mem_write_int_raw(sptr, Int(160), blk)
+  let _z4 = mem_write_int_raw(sptr, Int(168), Int(0))
+  let _l  = loop_while(sptr, rt_span_more, rt_span_count, Int(100000000))
+  let tot = mem_read_int_raw(sptr, Int(152))
+  let _fr = mem_free_raw(sptr, Int(256))
+  int_add(tot, Int(0))
+}

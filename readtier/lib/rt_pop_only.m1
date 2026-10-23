@@ -1,0 +1,20 @@
+// rt_pop_only — build the graph at population n and stop. Exists so the sweep
+// script can read peak RSS for the STRUCTURES alone: running a query would add
+// the result set (up to n triples of canonical Text) to the footprint and
+// inflate bytes/triple.
+//
+// The build INCLUDES the seal, so the footprint measured is the tier in the
+// state a reader finds it — sorted, not merely appended. u32v_sort3 is
+// sort_unstable_by over the array in place (u32v.rs), so the seal adds no
+// temporary of its own to the peak; that is a property of the primitive, not
+// an assumption made here.
+//
+// Nothing is written anywhere. The process's whole memory footprint is the
+// measurement, which is only meaningful because the tier is RAM-only.
+fn rt_pop_only(n: Int) -> Int {
+  let _r = rt_reset_all(Unit())
+  let _p = rt_populate(n)
+  let _e = io_println(str_concat(Text("entities="), int_to_str(rt_nidx_distinct(Unit()))))
+  let _s = io_println(str_concat(Text("triples="), int_to_str(rt_vcount(Int(0)))))
+  int_add(Int(0), Int(0))
+}

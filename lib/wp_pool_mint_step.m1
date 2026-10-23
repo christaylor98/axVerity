@@ -1,0 +1,33 @@
+// wp_pool_mint_step — mint ONE hotframe block and push it onto the free pool.
+// THE minting path: every block in the pool, including the one that starts out
+// active, is created here and nowhere else.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 1. The pool depth used to be structural:
+// src/mem_controller.m1 minted it by writing the same five-line stanza three
+// times, so the depth was the number of times someone had typed it and could
+// not be read from configuration. This is the loop_count body that replaced
+// that, and the depth is now wp_pool_depth().
+//
+// Status starts at 0 (not in use), which is what both consumers expect: the
+// steady-state acquire in wp_mem_controller_step CASes 0->1 when it claims a
+// block, and mem_controller_main's startup acquire does exactly the same to
+// the first one. That is why there is no separate "active block" mint — the
+// first block is not different, startup was just written separately from the
+// steady state.
+//
+// The state threaded through loop_count is the block CAPACITY, returned
+// unchanged on every iteration. loop_count's step fn takes exactly one Int and
+// the capacity is the only thing each mint needs, so an invariant state is the
+// honest shape here rather than a trick — and it costs no channel round-trip.
+//
+// This fn must never be hash-consed: it allocates fresh memory and a fresh
+// cell per call, so it is declared effect fullIo / deterministic false. A
+// merged mint would present as a pool silently one block short, which is the
+// same class of trap CLAUDE.md section 6b records for loop_count.
+fn wp_pool_mint_step(cap: Int) -> Int {
+  let res  = mem_reserve_raw(cap)
+  let ptr  = tuple_field(res, Int(0))
+  let cell = cell_new_raw(Int(0))
+  let _f   = bchan_send(Text("wp-free-pool"), list_of_2(ptr, cell))
+  int_add(cap, Int(0))
+}

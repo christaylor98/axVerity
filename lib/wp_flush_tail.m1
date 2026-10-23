@@ -1,0 +1,24 @@
+// wp_flush_tail — seal whatever is left in both staging buffers at end of
+// input.
+//
+// Both streams can hold a partial block at once, so this is two seals, not
+// one. It runs in the counting pass as well as the real one, through the same
+// wp_seal_stream, so the block count the pipeline is bounded by includes the
+// tail blocks — an off-by-two here would leave two threads waiting forever on
+// a seal that never comes.
+//
+// A stream with an empty buffer seals nothing: a zero-length block would still
+// consume an id and would still have to be decoded, for no records.
+fn wp_flush_tail(sptr: Int) -> Int {
+  let so  = mem_read_int_raw(sptr, Int(48))
+  let _a  = if int_gt(so, Int(0)) {
+              let _s = mem_write_int_raw(sptr, Int(96), Int(0))
+              wp_seal_stream(sptr)
+            } else { int_add(sptr, Int(0)) }
+  let po  = mem_read_int_raw(sptr, Int(64))
+  let _b  = if int_gt(po, Int(0)) {
+              let _s = mem_write_int_raw(sptr, Int(96), Int(1))
+              wp_seal_stream(sptr)
+            } else { int_add(sptr, Int(0)) }
+  int_add(sptr, Int(0))
+}

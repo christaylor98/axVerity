@@ -1,0 +1,7 @@
+// rt_u32v_s1 — one u32v_get per step. Against rt_u32v_s0 this is the cost of a
+// crossing PLUS the Text literal the name argument needs, since the pool builds
+// Text("rt:u") as an Arc::from on every call (value.rs:152).
+fn rt_u32v_s1(i: Int) -> Int {
+  let g = u32v_get(Text("rt:u"), i)
+  int_add(g, Int(0))
+}

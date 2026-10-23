@@ -1,0 +1,8 @@
+// rt_nidx_pop_step — one iteration of the name-index population sweep. The
+// foreach callback: it receives the element itself, so the list is never named
+// inside the loop body and never cloned. This is the whole point of FOREACH_ONLY
+// (iter.rs:41-48 moves the Vec; naming a list at a call site clones it).
+fn rt_nidx_pop_step(i: Int) -> Int {
+  let id = rt_nidx_resolve(str_concat(Text("n"), int_to_str(i)))
+  int_add(id, Int(0))
+}

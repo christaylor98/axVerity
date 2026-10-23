@@ -1,0 +1,33 @@
+// rt_span_footer — the 8-byte continuation footer of one block file, WITHOUT
+// staging the block. Separated so the chain walk states its intent once and
+// every caller reads the footer the same way.
+//
+// It reads 8 bytes, and that is now true rather than aspirational. It used to
+// fs_read_bytes the whole file to find out where the end was, which made
+// rt_span_count's "the count costs one 8-byte read per block in the chain
+// rather than a whole block" false by a factor of the block size — for a 3 GB
+// record at a 4 MiB capacity, 750 whole-block reads to compute a number that
+// needs 6 KB.
+//
+// The seek target comes from the STRIDE, which is the capacity this store's
+// blocks were written at (rt_rid_stride, read from the stamp). Every block a
+// chain continues INTO is exactly that size by construction — wp_span_block
+// fills the payload edge to edge — so for those the range read lands exactly
+// on the footer. A block that is SHORT is one the writer flushed partially,
+// which can only be a chain's terminator, and fs_read_range clamps over-EOF to
+// a short read rather than failing: fewer than 8 bytes back means "this one
+// needs its real length", and it is read whole. So a chain costs one 8-byte
+// pread per block plus at most ONE whole-block read, for the last.
+fn rt_span_footer(path: Text, stride: Int) -> Int {
+  let tailb = fs_read_range(path, int_sub(stride, Int(8)), Int(8))
+  let full  = int_eq(bytes_len(tailb), Int(8))
+  let b     = if full { tailb } else { fs_read_bytes(path) }
+  let blen  = bytes_len(b)
+  let cap   = int_add(blen, Int(16))
+  let res   = mem_reserve_raw(cap)
+  let p     = tuple_field(res, Int(0))
+  let _w    = mem_write_raw(p, Int(0), b)
+  let f     = mem_read_int_raw(p, int_sub(blen, Int(8)))
+  let _fr   = mem_free_raw(p, cap)
+  int_add(f, Int(0))
+}

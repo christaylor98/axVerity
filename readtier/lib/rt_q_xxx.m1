@@ -1,0 +1,5 @@
+// rt_q_xxx — nothing bound. Any projection serves it; rt:A is chosen
+// arbitrarily. nk=0, so no search runs and the range is the whole array.
+fn rt_q_xxx(u: Unit) -> Int {
+  rt_range(Int(0), Int(0), Int(0), Int(0), Int(0))
+}

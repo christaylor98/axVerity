@@ -1,0 +1,105 @@
+// rt_dscan_step — decode ONE F1v record out of a staged block and step past it.
+//
+// The varint is read as a single 8-byte mem_read_int_raw and taken apart
+// arithmetically, which is the only way to read a byte in M1 — there is no
+// byte-width load, and bytes_get is not one: it is declared `vec![Bytes, Int]`
+// and its argument is emitted with .clone(), so Value::Bytes being a plain
+// Vec<u8> with no sharing makes per-byte access a full copy of the block and a
+// scan O(N^2). The block is staged in raw memory once and never named again.
+//
+// mem_read_int_raw returns a SIGNED i64, so a record boundary whose following
+// bytes have the top bit set reads back NEGATIVE. That is correct here only
+// because int_div and int_mod are Euclidean (P0): a remainder is always in
+// [0, y), so byte extraction from a negative word is right by construction.
+// Before that fix this exact decode walked the cursor backwards off the front
+// of the buffer.
+//
+// Two varint bytes are enough, and that is provable rather than hopeful: a
+// 3-byte varint encodes a length of at least 16384, and a block's payload
+// capacity is 16376, so no record that fits in a block can need one. A third
+// continuation byte therefore means the block is malformed; it is counted and
+// the scan is stopped, never decoded past.
+//
+// Scratch, 8 bytes per slot:
+//    0  bptr    staged block base      48  want    ordinal wanted (mode 1)
+//    8  lim     payload limit          56  recoff  this record's payload offset
+//   16  off     read cursor            64  reclen  this record's payload length
+//   24  blkid   this block's id        72  nrec    records seen, cumulative
+//   32  ord     next record ordinal    80  foff    found offset (mode 1)
+//   40  mode    0 = index, 1 = seek    88  flen    found length (mode 1)
+//                                      96  bad     malformed records
+fn rt_dscan_step(sptr: Int) -> Int {
+  let bptr = mem_read_int_raw(sptr, Int(0))
+  let off  = mem_read_int_raw(sptr, Int(16))
+  let w    = mem_read_int_raw(bptr, off)
+  let b0   = int_mod(w, Int(256))
+  let b1   = int_mod(int_div(w, Int(256)), Int(256))
+
+  // AXVERITY_EXTENT_WRITE_PATH step 5b: three-byte prefixes are LEGAL now.
+  // They were rejected as corruption on the reasoning that a 3-byte prefix
+  // encodes at least 16384 bytes while a block's payload capacity was 16376.
+  // Configurable capacity killed that reasoning: at 16 MiB a 20,000-byte
+  // record is ordinary, wp_write_step writes it with a 3-byte prefix, and it
+  // would have been counted malformed and silently dropped from the index.
+  let b2   = int_mod(int_div(w, Int(65536)), Int(256))
+  let one  = int_lt(b0, Int(128))
+  let two  = int_lt(b1, Int(128))
+  let len  = if one { int_add(b0, Int(0)) }
+             else {
+               if two { int_add(int_sub(b0, Int(128)), int_mul(b1, Int(128))) }
+               else   { int_add(int_sub(b0, Int(128)),
+                          int_add(int_mul(int_sub(b1, Int(128)), Int(128)),
+                                  int_mul(b2, Int(16384)))) }
+             }
+  let vlen = if one { int_add(Int(1), Int(0)) }
+             else {
+               if two { int_add(Int(2), Int(0)) } else { int_add(Int(3), Int(0)) }
+             }
+
+  // A record that claims a third varint byte, or one whose body runs past the
+  // payload limit, cannot have been written by this format. Stop rather than
+  // decode into the footer or past the end of the block.
+  let lim  = mem_read_int_raw(sptr, Int(8))
+  // A record running past the payload limit is the only structural corruption
+  // a length prefix can detect. (It cannot detect a torn write whose bytes
+  // happen to parse — that is what the Slice-4 per-record hash is for.)
+  let sick = int_gt(int_add(off, int_add(vlen, len)), lim)
+  let nb   = mem_read_int_raw(sptr, Int(96))
+  let _sb  = if sick { mem_write_int_raw(sptr, Int(96), int_add(nb, Int(1))) }
+             else    { io_print(Text("")) }
+  // Driving the cursor negative ends the loop through rt_dscan_more's own
+  // off >= 0 guard, so a malformed block stops the scan instead of spinning.
+  let _se  = if sick { mem_write_int_raw(sptr, Int(16), int_sub(Int(0), Int(1))) }
+             else    { io_print(Text("")) }
+
+  let recoff = int_add(off, vlen)
+  let ord    = mem_read_int_raw(sptr, Int(32))
+  let mode   = mem_read_int_raw(sptr, Int(40))
+  let want   = mem_read_int_raw(sptr, Int(48))
+  let _r1    = mem_write_int_raw(sptr, Int(56), recoff)
+  let _r2    = mem_write_int_raw(sptr, Int(64), len)
+
+  // RID_IS_ONE_INTEGER depends on the ordinal fitting under the stride. A
+  // block cannot hold enough records to break it, but an alias here would be
+  // silent and permanent, so it is checked rather than argued.
+  // The ordinal-overflow assertion is gone with the ordinal. A locator carries
+  // a BYTE OFFSET now, and an offset is below the stride by construction — the
+  // stride IS the block capacity and a block's payload is at most capacity-8.
+  // The old scheme had to be argued about and checked; this one cannot alias.
+  let _ro = mem_write_int_raw(sptr, Int(120), off)
+
+  let hit = bool_and(int_gt(mode, Int(0)), int_eq(ord, want))
+  let _h1 = if hit { mem_write_int_raw(sptr, Int(80), recoff) } else { io_print(Text("")) }
+  let _h2 = if hit { mem_write_int_raw(sptr, Int(88), len) }    else { io_print(Text("")) }
+
+  let _ix = if bool_and(int_eq(mode, Int(0)), bool_not(sick)) { rt_dindex_rec(sptr) }
+            else { int_add(Int(0), Int(0)) }
+
+  let _a1 = if sick { io_print(Text("")) }
+            else    { mem_write_int_raw(sptr, Int(16), int_add(recoff, len)) }
+  let _a2 = mem_write_int_raw(sptr, Int(32), int_add(ord, Int(1)))
+  let nr  = mem_read_int_raw(sptr, Int(72))
+  let _a3 = if sick { io_print(Text("")) }
+            else    { mem_write_int_raw(sptr, Int(72), int_add(nr, Int(1))) }
+  int_add(sptr, Int(0))
+}

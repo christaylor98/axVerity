@@ -1,0 +1,52 @@
+// NESTED_IF_WORKAROUND (split-counterpart): no ifs of its own; exists so the dispatch has two fns to choose between.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_flusher_eos — the end-of-stream half: publish the run's final durable seq
+// and release everything still waiting on the watermark.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. Takes the sentinel bundle off
+// wp-flush-live and discards it — the handoff exists so that exactly one of
+// the two halves consumes exactly one message.
+fn wp_flusher_eos(_u: Unit) -> Text {
+  let _drop = bchan_take(Text("wp-flush-live"))
+
+  // Seal both streams before anything is told the run is over. slab_seal
+  // sweeps pending blocks and final-fsyncs the active one regardless of the
+  // SLA gate, so nothing is left as a .part — an unsealed block is invisible
+  // to every reader by construction, so leaving one would be silent loss.
+  let hs    = bchan_take(Text("wp-slab-s"))
+  let hp    = bchan_take(Text("wp-slab-p"))
+  let _ss   = slab_seal(hs)
+  let _sp   = slab_seal(hp)
+
+  // AXVERITY_W2_ADMIT_HANDLE_V1 G2 — publish the block-id range this run
+  // produced, per stream, AFTER both seals and therefore after every block this
+  // run will ever mint exists. Reading it before the seals would miss the tail
+  // block of each stream, which is the block a small batch most often consists
+  // entirely of. See lib/wp_publish_ids.m1.
+  let _ids  = wp_publish_ids(hs, hp)
+
+  // slab_seal fsyncs and seals regardless of the SLA gate, so everything
+  // appended is durable at this point — promote BEFORE reading the final seq,
+  // or a run whose last blocks were never covered by a tick would report a
+  // final lower than what it actually made durable.
+  let _pr   = wp_promote_durable(Unit())
+
+  let wm  = bchan_take(Text("wp-durable-cell"))
+  let _wp = bchan_send(Text("wp-durable-cell"), wm)
+  let fin = cell_load_raw(wm)
+
+  // Order matters. Publish the final seq FIRST, then unblock the waiters — a
+  // waiter woken before the final is visible would recheck, still find its
+  // target unreached, and park again.
+  let ac  = bchan_take(Text("wp-ack-final-cell"))
+  let _ap = bchan_send(Text("wp-ack-final-cell"), ac)
+  let _sf = cell_cas_raw(ac, Int(1000000000), fin)
+
+  // Bump the watermark past any target a waiter can hold, so a wp_wait_durable
+  // parked on a seq this run will never reach returns instead of blocking
+  // forever. The notification alone is not enough — it is only a hint, and the
+  // recheck would fail.
+  let _bw = cell_cas_raw(wm, fin, Int(1000000000))
+  let _n  = bchan_send(Text("wp-durable-advance"), int_sub(Int(0), Int(1)))
+  str_concat(Text("1"), Text(""))
+}

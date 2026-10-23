@@ -1,0 +1,23 @@
+// rt_scan — materialize the range [start, end) of `store` into the result set.
+//
+// DEDUP RIDES IN THE RESULT SET, NOT IN THE ARRAY. The projections are
+// APPEND_ONLY: the surface has no set, no remove and no truncate, so the same
+// triple indexed twice occupies two records for the life of the process and
+// the only place a duplicate can be collapsed is on the way out. rt_out_emit's
+// set probe does exactly that, so a query's cardinality is distinct triples
+// even though its range is records — which is what the fixture's deliberate
+// duplicate insert pins.
+//
+// The consequence, stated rather than buried: end - start is the RECORD count,
+// not the answer's cardinality, and the two differ exactly by the duplicates in
+// the range. Every caller here materializes, so no caller reads the difference;
+// a future cardinality-only path would need a real dedup pass, which under
+// APPEND_ONLY means building a second array rather than compacting this one.
+fn rt_scan(store: Int, p: Int) -> Int {
+  let r = if int_eq(store, Int(0)) {
+            rt_scan_a(p)
+          } else {
+            if int_eq(store, Int(1)) { rt_scan_b(p) } else { rt_scan_c(p) }
+          }
+  int_add(r, Int(0))
+}

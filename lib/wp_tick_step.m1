@@ -1,0 +1,44 @@
+// wp_tick_step — one tick: sleep out the SLA period, then post a tick message
+// to the disk controller's queue.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 2. This thread NEVER touches a block, a
+// pointer, or the store. It posts a message and goes back to sleep. All
+// coalescing and all durability decisions happen in the disk controller and
+// below — the timer and the flusher never talk to each other, and neither
+// knows the other exists.
+//
+// UNIT BOUNDARY, stated because it already bit once. The knob is in
+// MICROSECONDS, because that is what slab_open takes (`sla_us`). The bridge's
+// `sleep` primitive is in MILLISECONDS (runtime/process.rs: `from_millis`) —
+// `proc_sleep` is the seconds one. So the division happens here, at the single
+// point where the two units meet, and nowhere else.
+//
+// A period under 1 ms would divide to a 0 ms sleep and turn this thread into a
+// busy spin that starves the very pipeline it is timing, so it is refused
+// loudly rather than floored. Sub-millisecond SLAs are not a tick's job.
+//
+// Sleeping BEFORE the send, not after, so a run that ends immediately does not
+// post a spurious tick into a queue nobody will drain. The cost of that choice
+// is that a finished run lingers up to one period while this thread sleeps out
+// its last interval — bounded by the SLA, and the reason the run cell is
+// checked on wake rather than being waited on.
+//
+// The message is [0]: kind 0 = tick. A write bundle is [1, <bundle>]. Kind
+// leads so the disk controller can dispatch on list_get(msg, 0) without
+// unpacking anything else — a write bundle travels nested and UNCHANGED, so
+// flusher's message shape is untouched by this.
+fn wp_tick_step(state: Text) -> Text {
+  let us   = wp_tick_sla_us(Unit())
+  let ms   = int_div(us, Int(1000))
+  let _chk = if int_lt(ms, Int(1)) {
+               let _m = io_println(str_concat(Text("FATAL sla_us_below_one_millisecond="),
+                          str_concat(int_to_str(us),
+                            Text(" — a sub-millisecond tick divides to a 0 ms sleep and busy-spins"))))
+               proc_exit(Int(1))
+             } else {
+               io_print(Text(""))
+             }
+  let _s   = sleep(ms)
+  let _p   = bchan_send(Text("wp-dc"), list_of_1(Int(0)))
+  str_concat(state, Text(""))
+}

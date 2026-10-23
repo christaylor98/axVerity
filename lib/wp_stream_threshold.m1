@@ -1,0 +1,15 @@
+// wp_stream_threshold — the byte size at or below which a record is routed to
+// the STRUCTURE stream; above it, to the PAYLOAD stream (S2).
+//
+// 32 bytes, chosen because the measured corpus is cleanly bimodal — structure
+// records top out at 31 bytes and payload records start at 64 — so a size
+// threshold and a type tag select exactly the same records. Routing on size
+// keeps the write path free of any knowledge of what a record MEANS, which is
+// the same reason it frames with a length prefix rather than a schema.
+//
+// This is a routing rule, not a format constant: a block written on either
+// side decodes identically. Changing it changes which stream future records
+// land in and nothing about the ones already durable.
+fn wp_stream_threshold(_u: Unit) -> Int {
+  Int(32)
+}

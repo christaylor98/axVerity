@@ -1,0 +1,8 @@
+// rt_key3 — the canonical wire form of a triple, always in S,V,T order
+// regardless of which projection produced it. Every query returns triples in
+// this form, so results from different projections are directly comparable
+// and the tests can assert exact sets.
+fn rt_key3(a: Text, b: Text, c: Text) -> Text {
+  let us = chr(Int(31))
+  str_concat(a, str_concat(us, str_concat(b, str_concat(us, c))))
+}

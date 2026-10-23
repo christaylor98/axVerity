@@ -1,0 +1,145 @@
+// rt_range — the whole read API, once. Answer a prefix query against one
+// sealed projection and leave the result in the named result store.
+//
+// `store` is 0/1/2 for rt:A / rt:B / rt:C. `nk` is how many leading key
+// components are bound, and (q0, q1, q2) are their values IN THAT STORE'S KEY
+// ORDER — so `S?T`, which binds source and target, arrives here as rt:C with
+// (t, s) because rt:C ranks T first and S second. The caller does that
+// translation because the caller is the one that knows the binding pattern;
+// nothing below this line knows what a source is.
+//
+// THE KEY SLOTS ARE THE ROTATION AND THEY ARE ARITHMETIC. Store i ranks slots
+// (i, i+1, i+2) mod 3, which is exactly the cyclic cover — A:(0,1,2)
+// B:(1,2,0) C:(2,0,1). There is no rotation table here and none in the bridge.
+//
+// THE RANGE IS [lb(q), lb(q')), where q' is q with its LAST BOUND component
+// incremented and the unbound tail left at zero. That is the successor key in
+// the lexicographic order the array is sorted in: (s,0,0) -> (s+1,0,0) and
+// (s,v,0) -> (s,v+1,0).
+//
+// TWO OF THE EIGHT PATTERNS NEED FEWER THAN TWO SEARCHES.
+//   nk = 0, nothing bound: neither. The range is the whole array, and searching
+//     for it would be asking where 0 sorts.
+//   nk = 3, everything bound: one. The range can hold only records equal to q,
+//     so once the lower bound is known a single equality test against record
+//     `st` ends it — three u32v_get instead of another log2(n) probes. See
+//     rt_hit. The successor-key bump goes with it: it lives in rt_ub, on the
+//     branch that actually searches.
+//
+// That is NOT the trie's membership probe returning under a new name. The
+// descent is still a lower bound over a sorted array; the equality test
+// replaces the SECOND bound, not the first, and the pattern still costs
+// log2(n) probes rather than the trie's fixed hash chain.
+//
+// The scratch block is per call. A query costs one mem_reserve_raw of 128
+// bytes and one mem_free_raw; holding a block across calls would mean parking
+// its pointer somewhere M1 can read, and the only shared slot available is a
+// Text map, which is more expensive to consult than the reservation is to make.
+fn rt_range(store: Int, nk: Int, q0: Int, q1: Int, q2: Int) -> Int {
+  let _r   = rt_out_reset(Unit())
+  let _s   = rt_seal(Unit())
+  let nrec = rt_vcount(store)
+
+  let res  = mem_reserve_raw(Int(128))
+  let p    = tuple_field(res, Int(0))
+  let _k0  = mem_write_int_raw(p, Int(16), int_mod(store, Int(3)))
+  let _k1  = mem_write_int_raw(p, Int(24), int_mod(int_add(store, Int(1)), Int(3)))
+  let _k2  = mem_write_int_raw(p, Int(32), int_mod(int_add(store, Int(2)), Int(3)))
+  let _q0  = mem_write_int_raw(p, Int(40), q0)
+  let _q1  = mem_write_int_raw(p, Int(48), q1)
+  let _q2  = mem_write_int_raw(p, Int(56), q2)
+  let _l0  = mem_write_int_raw(p, Int(0),  Int(0))
+  let _h0  = mem_write_int_raw(p, Int(8),  nrec)
+
+  // THE PREVIOUS-RECORD SENTINEL for the scan's adjacency dedup (Phase A).
+  // -1 in all three slots, which no stored id can equal because u32v_push
+  // rejects a negative value outright, so the first record of the range is
+  // always fresh and rt_out_emit needs no first-time branch.
+  let _v0  = mem_write_int_raw(p, Int(88),  int_sub(Int(0), Int(1)))
+  let _v1  = mem_write_int_raw(p, Int(96),  int_sub(Int(0), Int(1)))
+  let _v2  = mem_write_int_raw(p, Int(104), int_sub(Int(0), Int(1)))
+
+  let st   = if int_eq(nk, Int(0)) { int_add(Int(0), Int(0)) } else { rt_lb(store, p) }
+
+  // THE END OF THE RANGE, three ways, and only one of them runs.
+  //   nk=0  the whole array; no search, nothing to bump.
+  //   nk=3  rt_hit: one equality test against record `st` (F1).
+  //   else  rt_ub: bump the last bound component, then search for it.
+  // The bump lives inside rt_ub rather than here so that nk=3 does not write a
+  // successor key for a search that no longer runs, and so that rt_hit reads
+  // q0..q2 as asked — nothing has overwritten them by the time it is called.
+  let en   = if int_eq(nk, Int(0)) {
+               int_add(nrec, Int(0))
+             } else {
+               if int_eq(nk, Int(3)) {
+                 rt_hit(store, p, st, nrec, q0, q1, q2)
+               } else {
+                 rt_ub(store, p, nk, q0, q1, st, nrec)
+               }
+             }
+
+  let _c0  = mem_write_int_raw(p, Int(80), st)
+  let _c1  = mem_write_int_raw(p, Int(72), en)
+  let _sc  = rt_scan(store, p)
+
+  // SEAL THE RESULT SET. APPEND_ONLY_PLUS_SEALED_SORT applies to rt:out the
+  // same way it applies to the projections: the scan fills by push and this is
+  // the one reordering, so no slot is ever mutated from M1.
+  //
+  // The seal makes the answer's ORDER a property of the ANSWER rather than of
+  // the projection that served it: every pattern hands back ascending canonical
+  // (s, v, t). It is also what lets rt_out_has binary-search instead of scan.
+  //
+  // SEVEN OF THE EIGHT PATTERNS ARRIVE CANONICAL ALREADY, and that is provable
+  // from the sort keys rather than measured. A range is a CONTIGUOUS slice of a
+  // sealed projection, so it carries that projection's order, and adjacency
+  // dedup only drops elements — it never reorders. Fix the bound components and
+  // read what is left:
+  //
+  //   rt:A  key (0,1,2) = (s,v,t)   any range      -> (s,v,t)  CANONICAL
+  //                                                   ??? S?? SV? SVT
+  //   rt:C  key (2,0,1) = (t,s,v)   t bound        -> (s,v)    CANONICAL
+  //                                                   ??T S?T
+  //   rt:B  key (1,2,0) = (v,t,s)   v and t bound  -> (s)      CANONICAL
+  //                                                   ?VT
+  //   rt:B  key (1,2,0) = (v,t,s)   v bound ONLY   -> (t,s)    NOT canonical
+  //                                                   ?V?
+  //
+  // Canonical order with a component held constant is the order of the
+  // remaining components in (s, v, t) sequence, which is what each right-hand
+  // column is — except the last, where (t, s) is the reverse pair. So the sort
+  // is needed by exactly one pattern and the guard is store == rt:B AND nk == 1.
+  // rt:B is never reached with nk = 0 or 3 (rt_q_xxx and rt_q_svt both route to
+  // rt:A), so nk == 1 separates ?V? from ?VT with nothing else to exclude.
+  //
+  // WHAT THIS SAVES IS NOT SMALL. ??? at 1M ran sort_unstable_by over 1,000,000
+  // already-sorted records once per query, for nothing. See the Phase A
+  // measurements in readtier/README.md for what it cost.
+  //
+  // rt_out_has is unaffected: its binary search needs rt:out SORTED, and on the
+  // seven guarded paths it is sorted on arrival rather than by this call.
+  //
+  // Eager, not lazy. rt_seal is lazy because a build appends n triples and reads
+  // once; this is the opposite shape — every query writes its own result set
+  // exactly once and then reads it — so a dirty test would cost a probe to save
+  // nothing. Doing it here also keeps the cost inside the number
+  // rt_bench_pattern reports, rather than hiding it in the first caller that
+  // happens to touch rt_out_at (the mistake coldbench already documents).
+  // THE GUARD IS NESTED, NOT bool_and, AND THAT IS A MEASURED CHOICE.
+  // bool_and is a CCall, so both its arguments are evaluated: two int_eq plus
+  // the and itself, three bridge crossings on EVERY query. Nested ifs are lazy
+  // (rust_05.rs:1601-1618), so the six patterns served by rt:A and rt:C pay ONE
+  // int_eq and stop. Only the rt:B pair reaches the second test.
+  let _os  = if int_eq(store, Int(1)) {
+               if int_eq(nk, Int(1)) {
+                 let _s = u32v_sort3(Text("rt:out"), Int(0), Int(1), Int(2))
+                 int_add(Int(1), Int(0))
+               } else {
+                 int_add(Int(0), Int(0))
+               }
+             } else {
+               int_add(Int(0), Int(0))
+             }
+  let _fr  = mem_free_raw(p, Int(128))
+  rt_out_count(Unit())
+}

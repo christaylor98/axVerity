@@ -1,0 +1,49 @@
+// NESTED_IF_WORKAROUND (FORCED): has its own `if`s.
+// rt_span_copy — pass two: stage each block of the chain and append its
+// contribution to the reassembly buffer. A block that continues contributes its
+// whole payload; one that does not contributes its leading `taillen` bytes and
+// ends the walk. Same bit1 test as rt_span_count, for the same reason — read
+// that fn's header.
+//
+// THE COPY IS CLAMPED TO WHAT PASS ONE COUNTED. Pass one sizes a continuing
+// block from the STRIDE (the capacity stamp) and this pass sizes it from the
+// staged file's own length. Those are the same number for every block this
+// writer produces, but they are two sources of truth for one fact, and the
+// failure mode if they ever disagree is not a wrong answer — it is
+// mem_copy_raw writing past the end of the buffer. The clamp makes a
+// disagreement produce a short record, which the count and the malformed
+// tally can then show, instead of corrupting the heap.
+//
+// Scratch: 112 stream, 136 buffer base, 144 buffer capacity in bytes (what
+// pass one counted), 152 bytes written so far, 160 block seq, 168 done flag.
+fn rt_span_copy(sptr: Int) -> Int {
+  let stream = mem_read_int_raw(sptr, Int(112))
+  let dst    = mem_read_int_raw(sptr, Int(136))
+  let total  = mem_read_int_raw(sptr, Int(144))
+  let at     = mem_read_int_raw(sptr, Int(152))
+  let seq    = mem_read_int_raw(sptr, Int(160))
+  let path   = rt_dblk_path(stream, seq)
+  let have   = int_gt(str_len(path), Int(0))
+  let b      = if have { fs_read_bytes(path) } else { text_to_bytes(Text("")) }
+  let blen   = bytes_len(b)
+  let cap    = int_add(blen, Int(64))
+  let res    = mem_reserve_raw(cap)
+  let src    = tuple_field(res, Int(0))
+  let _w     = mem_write_raw(src, Int(0), b)
+  let foot   = if have { mem_read_int_raw(src, int_sub(blen, Int(8))) } else { int_sub(Int(0), Int(1)) }
+  let norm   = int_eq(foot, int_sub(Int(0), Int(1)))
+  let flags  = if norm { Int(0) } else { int_div(foot, Int(4294967296)) }
+  let tail   = if norm { Int(0) } else { int_mod(foot, Int(4294967296)) }
+  let contin = int_mod(int_div(flags, Int(2)), Int(2))
+  let want   = if int_eq(contin, Int(1)) { int_sub(blen, Int(8)) }
+               else { int_add(tail, Int(0)) }
+  let room   = int_sub(total, at)
+  let take   = if int_lt(want, room) { int_add(want, Int(0)) } else { int_add(room, Int(0)) }
+  let _c     = mem_copy_raw(dst, at, src, Int(0), take)
+  let _fr    = mem_free_raw(src, cap)
+  let _a     = mem_write_int_raw(sptr, Int(152), int_add(at, take))
+  let _s     = mem_write_int_raw(sptr, Int(160), int_add(seq, Int(1)))
+  let cont   = bool_and(have, int_eq(contin, Int(1)))
+  let _d     = if cont { io_print(Text("")) } else { mem_write_int_raw(sptr, Int(168), Int(1)) }
+  int_add(sptr, Int(0))
+}

@@ -1,0 +1,101 @@
+// rt_dblk_scan — stage one durable block into raw memory and walk its records.
+//
+// The whole block is copied out of the file exactly ONCE (fs_read_bytes then a
+// single mem_write_raw) and is never named again. Everything after that reads
+// it through mem_read_int_raw / mem_read_raw at an offset. This is not a
+// stylistic preference: Value::Bytes is a plain Vec<u8> with no structural
+// sharing, and bytes_get takes it by value, so decoding a 16 KB block one byte
+// at a time through the Bytes API would copy 16 KB per byte read. Staging once
+// is what makes a block scan linear.
+//
+// The 8-byte continuation footer is excluded by setting the limit to
+// length - 8. It is not a record; decoding it as one would produce a garbage
+// length from whatever its low byte happens to be.
+//
+// AXVERITY_SPAN_RESTORE stage 3: THE FOOTER IS READ, NOT JUST SKIPPED. It says
+// what kind of block this is, and a reader folding a directory in arbitrary
+// order needs that from the block itself:
+//
+//   -1            ordinary            scan records from 0
+//   flags 2       FIRST fragment      no records here; the spanning record
+//                                     that starts at offset 0 is reassembled
+//                                     and indexed once, from this block
+//   flags 3       MIDDLE fragment     no records here at all
+//   flags 1 + t   LAST fragment       the leading t bytes finished a record
+//                                     already indexed at its FIRST block;
+//                                     ordinary records resume at offset t
+//   flags 4 + t   WHOLE unframed      the record IS this block, t bytes at
+//                                     offset 0, no continuation either way
+//
+// Scanning a fragment block as though it held records is exactly what this
+// prevents: its payload is raw body bytes with no length prefix, so the first
+// "varint" would be whatever byte the data happens to start with.
+//
+// TWO INDEPENDENT BITS, NOT A RANKING. bit1 says the block continues into the
+// next one; bit2 says the block holds a complete unframed record. What decides
+// where the framed walk starts is bit1, and what decides whether a record
+// BEGINS here is "flags 2 or flags 4". Testing `flags >= 2` conflated them and
+// is what made flags 4 unreachable: a one-block span was written, fsynced, and
+// indexed by nothing, because the reader recognised a chain only by its first
+// FULL fragment. That is not an edge case — at the 4 MiB default capacity it
+// is every record from 2097152 bytes up to the payload capacity, which cannot
+// be framed (the prefix stops at 2097151) yet fits one block.
+//
+// The block is freed before returning. A cold rebuild opens every block in the
+// structure stream in turn, and holding them all would make peak memory a
+// function of store size rather than of block size.
+fn rt_dblk_scan(sptr: Int) -> Int {
+  let path = map_get(Text("rt:d"), Text("path"))
+  let b    = fs_read_bytes(path)
+  let blen = bytes_len(b)
+  let cap  = int_add(blen, Int(64))
+  let res  = mem_reserve_raw(cap)
+  let bptr = tuple_field(res, Int(0))
+  let _w   = mem_write_raw(bptr, Int(0), b)
+
+  let _s0 = mem_write_int_raw(sptr, Int(0),  bptr)
+  let _s1 = mem_write_int_raw(sptr, Int(8),  int_sub(blen, Int(8)))
+  let foot  = mem_read_int_raw(bptr, int_sub(blen, Int(8)))
+  let norm  = int_eq(foot, int_sub(Int(0), Int(1)))
+  let flags = if norm { Int(0) } else { int_div(foot, Int(4294967296)) }
+  let tailn = if norm { Int(0) } else { int_mod(foot, Int(4294967296)) }
+  // A fragment block holds no framed records: park the cursor at the limit so
+  // rt_dscan_more ends the walk before it starts. A LAST fragment resumes
+  // ordinary scanning after the tail it carried.
+  let contin = int_mod(int_div(flags, Int(2)), Int(2))
+  let start = if int_eq(contin, Int(1)) { int_sub(blen, Int(8)) } else { int_add(tailn, Int(0)) }
+  let _s2 = mem_write_int_raw(sptr, Int(16), start)
+  let _s3 = mem_write_int_raw(sptr, Int(32), Int(0))
+
+  // AXVERITY_EXTENT_WRITE_PATH step 5b — the stride, read ONCE PER BLOCK.
+  //
+  // rt_dindex_rec called rt_rid_stride() per RECORD, and rt_rid_stride reads
+  // the capacity stamp off disk: an fs_file_exists plus a whole-file read for
+  // every record indexed. Measured on the cold-rebuild gate, that cost 2.3x —
+  // 4,653 -> 10,566 ns per indexed record — and it hit the payload arm too,
+  // because rt_dindex_rec runs for every scanned record before deciding the
+  // record is not a triple. The stride cannot change inside a block, so it
+  // belongs here.
+  let _s5 = mem_write_int_raw(sptr, Int(128), rt_rid_stride(Unit()))
+
+  // The stream bit, derived from the path
+  // this block was found under. It goes into every locator this scan mints, so
+  // a reader never has to guess the directory back.
+  let _s4 = mem_write_int_raw(sptr, Int(112),
+              if int_gte(str_index_of(path, Text("/payload")), Int(0)) { Int(1) } else { Int(0) })
+
+  // 100M is a runaway backstop, not a bound on the data: rt_dscan_more ends
+  // the loop at the payload limit, and a malformed record ends it by driving
+  // the cursor negative. A block cannot hold more than 16376 records.
+  let _l  = loop_while(sptr, rt_dscan_more, rt_dscan_step, Int(100000000))
+
+  // A spanning record is indexed ONCE, from the block it starts in — a first
+  // fragment (2) or a whole unframed record (4). Branching to a fn, not to a
+  // block: rt_span_index has its own `if`s and an untaken branch would run
+  // them (CLAUDE.md section 2).
+  let begins = bool_or(int_eq(flags, Int(2)), int_eq(flags, Int(4)))
+  let _sp = if begins { rt_span_index(sptr) } else { int_add(sptr, Int(0)) }
+
+  let _f  = mem_free_raw(bptr, cap)
+  int_add(sptr, Int(0))
+}

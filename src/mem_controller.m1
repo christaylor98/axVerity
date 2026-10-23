@@ -1,0 +1,118 @@
+// mem_controller — one of the slice's 5 --entries threads: the sole memory
+// manager for the write-destination pool, the sole planner, and the ONLY
+// thread that ever talks to disk_controller. It mints the 3 pool blocks
+// (mem_reserve_raw) and a status cell per block (cell_new_raw), and never
+// touches a block's own content — only status-cell bookkeeping and forwarding.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1 changed two things here.
+//
+// B1. The seq counter was seeded Int(0) unconditionally, so every restart
+// began minting at 0 and run 2's block-0.bin landed on run 1's. Measured:
+// three lifetimes writing one 9,000-record corpus left 3,000 records, and 22
+// ids were reissued across 3 crash-restart rounds. It is now seeded from
+// wp_bid_resolve — max+1 over the durable store, strict parse, scanning the
+// union of both stream directories because S2 shares one id space across them.
+// This is the change that makes records survive a restart; framing alone never
+// could, and every framing candidate failed round-trip until it landed.
+//
+// The block count now arrives on a channel instead of argv. With F1v it is not
+// derivable from the input's size — hot_mem_write computes it with a counting
+// pass over the real packer and publishes it. Taking it here is also what
+// orders startup: the pool is not minted until the input has been read.
+//
+// It no longer derives a sealed block's LENGTH. That was seq * payload
+// capacity against the input length, which is exact for fixed chunking and
+// meaningless for framed records — a block now ends wherever the next record
+// would not fit. The length travels with the seal signal instead.
+fn mem_controller_main(argv: TextList) -> Unit {
+  let cap  = wp_block_capacity(Unit())
+  let fsz  = wp_footer_size(Unit())
+  let pcap = int_sub(cap, fsz)
+
+  let first = wp_bid_resolve(Unit())
+
+  // Capacity is fixed for the life of a store: the read tier's RID stride
+  // derives from it, so writing a store at a capacity different from the one
+  // its existing blocks were written at would silently re-decode every RID
+  // already handed out. Verified here, after wp_bid_resolve — which is both
+  // what tells us whether the store is empty and what has already created
+  // .axverity-store/ for the stamp to live in.
+  let _cs = wp_cap_stamp(cap, first)
+
+  // POOL DEPTH. Was three hand-written mint stanzas, so the depth was however
+  // many times the stanza had been typed. It is configuration now
+  // (wp_pool_depth), because it is a throughput parameter that was originally
+  // chosen for testability: the pool is the entire buffer between the packer
+  // and a single flusher thread, so at depth d the writer can run at most d-1
+  // blocks ahead of the disk.
+  //
+  // Below 3 the pool stops exercising rotation, which is the property
+  // THREE_BLOCKS_MEAN_EJECTION_IN_RUN exists to guarantee — so it is refused
+  // loudly and the process exits, never clamped up to 3 behind the operator's
+  // back. A configured value that does not do what it says is worse than a
+  // rejected one.
+  let depth = wp_pool_depth(Unit())
+  let _dchk = if int_lt(depth, Int(3)) {
+                let _m = io_println(str_concat(Text("FATAL pool_depth_below_minimum="),
+                           str_concat(int_to_str(depth), Text(" minimum=3"))))
+                proc_exit(Int(1))
+              } else {
+                io_print(Text(""))
+              }
+
+  // ONE minting path for all `depth` blocks, all at status 0 (not in use).
+  //
+  // The active block used to be minted inline and separately, on the grounds
+  // that its status cell starts at 1 (writing) and it goes straight to
+  // hot_mem_write rather than onto the free pool. That made startup a second
+  // mint algorithm alongside the loop. It is not one: acquiring a free block
+  // and CASing it 0->1 is EXACTLY what wp_mem_controller_step already does for
+  // every block after the first —
+  //
+  //     let free  = bchan_take(Text("wp-free-pool"))
+  //     let _mark = cell_cas_raw(nstatus, Int(0), Int(1))
+  //
+  // — so the first block was only special because startup was written
+  // separately from the steady state, not because it differs. Minting all
+  // `depth` uniformly and then acquiring the first one the same way every
+  // later one is acquired removes the second path entirely, rather than
+  // shrinking it.
+  // AXVERITY_EXTENT_WRITE_PATH step 2 — the run cell. The tick thread is the
+  // pipeline's only unbounded loop; this is how it learns the run has ended.
+  // Minted here because mem_controller is already the slice's cell minter, and
+  // published on its own one-shot channel so the timer's startup is ordered
+  // behind B1's id resolve rather than racing it.
+  let runcell = cell_new_raw(Int(1))
+  let _rcp    = bchan_send(Text("wp-run-cell-pub"), runcell)
+
+  let _mint = loop_count(depth, cap, wp_pool_mint_step)
+
+  let blk0  = bchan_take(Text("wp-free-pool"))
+  let ptr0  = list_get(blk0, Int(0))
+  let cell0 = list_get(blk0, Int(1))
+  let _act0 = cell_cas_raw(cell0, Int(0), Int(1))
+
+  // Published TWICE: flusher seeds the durable watermark at first-1 (a CAS
+  // from seq-1 has to start from somewhere real), and ack_bench waits on
+  // absolute sequence numbers. Both block here until it arrives, which also
+  // orders them behind B1's resolve.
+  let _fs1 = bchan_send(Text("wp-first-seq-pub"), first)
+  let _fs2 = bchan_send(Text("wp-first-seq-pub"), first)
+
+  // No chain — see lib/wp_mc_assign.m1.
+  let footerval0 = int_sub(Int(0), Int(1))
+
+  let _mc0     = bchan_send(Text("wp-mc-active"), list_of_2(ptr0, cell0))
+  let abundle0 = list_append(list_of_3(ptr0, pcap, cell0), footerval0)
+  let _ab0     = bchan_send(Text("wp-active-block"), abundle0)
+
+  let fs    = chr(Int(28))
+  let init  = str_concat(int_to_str(first), str_concat(fs, Text("0")))
+  let _done = loop_while(init, wp_mc_more, wp_mem_controller_step, Int(1000000000))
+
+  // End of run: stop the timer. Without this the tick thread loops forever and
+  // the process never exits — the one place a bounded batch pipeline and an
+  // unbounded timer have to meet.
+  let _stop = cell_cas_raw(runcell, Int(1), Int(0))
+  Unit()
+}

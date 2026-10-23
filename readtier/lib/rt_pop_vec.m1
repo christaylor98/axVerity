@@ -1,0 +1,11 @@
+// rt_pop_vec — build the three PROJECTIONS alone at population n, seal them,
+// and stop. No name is ever resolved, so the residual over rt_pop_loop is the
+// u32 arrays and nothing else.
+fn rt_pop_vec(n: Int) -> Int {
+  let _r = rt_reset_all(Unit())
+  let _n = map_put(Text("rt:bench"), Text("n"), int_to_str(n))
+  let _f = foreach(range(Int(0), n), rt_pop_vec_step)
+  let _s = rt_seal(Unit())
+  let _e = io_println(str_concat(Text("triples="), int_to_str(rt_vcount(Int(0)))))
+  int_add(Int(0), Int(0))
+}

@@ -1,0 +1,22 @@
+// wp_tick_more — loop_while condition for the tick thread: keep ticking while
+// the run is still active.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 2. The tick thread is the first UNBOUNDED
+// loop in a pipeline that is otherwise bounded by block count — every other
+// --entries thread runs loop_count(n) and terminates when the n blocks are
+// done. A timer has no n. Without a termination condition the process would
+// never exit, which would turn every test in this repo into a hang.
+//
+// The condition is a run cell, minted by mem_controller at 1 and CAS'd to 0
+// once its own loop_count has finished. A cell rather than a channel because
+// the tick thread must be able to ask "still running?" WITHOUT blocking — a
+// bchan_take here would park the timer behind the very quiet period it exists
+// to serve.
+//
+// state = "<cell>", plain Text, matching wp_wait_durable's Text-state idiom
+// (loop_while's Fn args take a concrete type, never a bare Value).
+fn wp_tick_more(state: Text) -> Bool {
+  let cell = str_to_int(state)
+  let cur  = cell_load_raw(cell)
+  int_eq(cur, Int(1))
+}

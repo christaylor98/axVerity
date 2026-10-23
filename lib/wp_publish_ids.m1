@@ -1,0 +1,69 @@
+// wp_publish_ids — publish this run's block-id range, PER STREAM, for the
+// transport to relay to the client (AXVERITY_W2_ADMIT_HANDLE_V1 G2, Lead
+// Architect ruling (a), 2026-08-26).
+//
+// ── WHY PER STREAM, AND WHY THE ALLOCATOR IS SLABLOCK ───────────────────────
+// The ruling amended a hard limit that had been written from a false fact.
+// There is no global block id: since AXVERITY_EXTENT_WRITE_PATH 5d, slablock
+// mints a sequence PER HANDLE and a handle is a stream, so structure/block-0
+// and payload/block-0 both exist and differ. Contract §2.1 publishes this;
+// experiments/handle/no-global-id.sh reproduces it in 5 assertions.
+//
+// So the id a consumer can be handed is (stream, first, count), and the only
+// honest source for it is slablock itself — the thing that mints it.
+// mem_controller's own `seq` is NOT that number: it is seeded max+1 over the
+// union of the two directories, which is a multiset, so it reissues ids across
+// restarts and names no file. It is an ordering value and stays one.
+//
+// ── WHERE THE TWO NUMBERS COME FROM, AND WHY TWO SOURCES ───────────────────
+// `slab_sealed(h)` is the sealed-block ledger, one "<seq>\t<hash>\t<len>" line
+// per block THIS handle sealed in THIS process lifetime, in seal order — so its
+// first line's first field is this run's first block id for that stream. It is
+// the ledger and not the filesystem deliberately: a directory scan would see
+// every earlier run's blocks too, and picking this run's out of them is exactly
+// the derivation the spine rule forbids av_admit from doing.
+//
+// The COUNT comes from `slab_stats(h)`'s `sealed=` counter rather than from
+// counting the ledger's lines, because M1 has no line count that is not a loop,
+// and a loop here would be a second implementation of a number slablock already
+// keeps. Both are read from the same handle at the same instant, after
+// wp_flusher_eos has sealed it, so they describe the same set.
+//
+// ── AN EMPTY STREAM REPORTS -1, NEVER 0 ────────────────────────────────────
+// `slab_sealed` returns "" for a stream that sealed nothing, `str_before` falls
+// back to the WHOLE string when its delimiter is absent (str_ops.rs:133 — the
+// opposite of str_after, which returns ""), and `str_to_int("")` is 0
+// (arith.rs:142, `parse().unwrap_or(0)`). So the natural reading of an empty
+// ledger is the id 0, which is a real block id in every store. The count gates
+// it: count 0 forces first to -1, and a consumer reading count 0 must not read
+// first. Verified rather than argued — a structure-only batch is the common
+// case and it makes payload empty every time.
+//
+// Shape, one line, four integers, space-separated:
+//
+//     <structure_first> <structure_count> <payload_first> <payload_count>
+//
+// Written to .axverity-store/admit.ids, which shim/lib/sh_admit.m1 truncates
+// before every spawn — so a stale range can never be attached to a later
+// admission, the same discipline writer.err already uses.
+fn wp_publish_ids(hs: Int, hp: Int) -> Unit {
+  let tb  = chr(Int(9))
+  let sp  = chr(Int(32))
+
+  let ns  = str_to_int(str_before(str_after(slab_stats(hs), Text("sealed=")), tb))
+  let np  = str_to_int(str_before(str_after(slab_stats(hp), Text("sealed=")), tb))
+
+  // The first id is parsed only inside the arm that has one: an empty stream
+  // has slab_sealed == "" and str_to_int("") is a fault. Its other arm is the
+  // documented -1 of the line format (count 0 means first is not read).
+  let fs1 = if int_gt(ns, Int(0)) { str_to_int(str_before(slab_sealed(hs), tb)) }
+            else                  { int_sub(Int(0), Int(1)) }
+  let fp1 = if int_gt(np, Int(0)) { str_to_int(str_before(slab_sealed(hp), tb)) }
+            else                  { int_sub(Int(0), Int(1)) }
+
+  let line = str_concat(int_to_str(fs1),
+               str_concat(sp, str_concat(int_to_str(ns),
+                 str_concat(sp, str_concat(int_to_str(fp1),
+                   str_concat(sp, int_to_str(np)))))))
+  fs_write_text(Text(".axverity-store/admit.ids"), line)
+}

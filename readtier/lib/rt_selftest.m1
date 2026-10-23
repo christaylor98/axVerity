@@ -1,0 +1,9 @@
+// rt_selftest — every correctness suite in the read tier, in order. Returns
+// the total failure count so the driver can set an exit status.
+fn rt_selftest(u: Unit) -> Int {
+  let _h1 = io_println(Text("[W1] name-index"))
+  let f1  = rt_nidx_selftest(Unit())
+  let _h2 = io_println(Text("[W2/W3] projections and traversal"))
+  let f2  = rt_query_selftest(Unit())
+  int_add(f1, f2)
+}

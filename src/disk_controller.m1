@@ -1,0 +1,21 @@
+// disk_controller — one of the slice's --entries threads, and the pipeline's
+// coordinator.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 3 turned it from a pure passthrough into a
+// QUEUE. It used to drive an exact loop_count forwarding each sealed block's
+// bundle one hop to flusher — a controller with nothing to control. It now
+// drains ONE channel fed by TWO producers (mem_controller's write bundles and
+// the tick thread's SLA ticks), coalesces redundant instructions, and acts.
+//
+// The bound moved twice. loop_count(n) counted MESSAGES, which equalled blocks
+// only while every message was a block. Step 3 moved it to "n writes
+// forwarded", which is right about ticks but still rests on a PREDICTED n —
+// and step 5a showed a tick can seal a partial block no prediction ever saw.
+// It bounds on the end-of-stream sentinel now, which is posted after the last
+// seal actually happens and so cannot drift from the run.
+//
+// Still no raw-memory touch and no disk I/O here.
+fn disk_controller_main(argv: TextList) -> Unit {
+  let _done = loop_while(Text("0"), wp_dc_more, wp_dc_step, Int(1000000000))
+  Unit()
+}

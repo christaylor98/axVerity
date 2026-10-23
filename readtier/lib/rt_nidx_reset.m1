@@ -1,0 +1,13 @@
+// rt_nidx_reset — drop the whole name-index. RAM only, so this is the entire
+// lifecycle story: there is nothing on disk to unlink and no checkpoint to
+// invalidate. Exists so the test driver can run independent cases in one
+// process.
+//
+// u32v_new on the prev array both empties it and restarts id minting at 0,
+// because the length IS the counter.
+fn rt_nidx_reset(u: Unit) -> Unit {
+  let _a = map_clear(Text("rt:nidx:head"))
+  let _c = map_clear(Text("rt:nidx:name"))
+  let _p = u32v_new(Text("rt:nidx:prev"))
+  Unit()
+}

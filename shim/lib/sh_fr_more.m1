@@ -1,0 +1,10 @@
+// sh_fr_more — loop_while condition for the ADMIT frame scan: another byte of
+// body to account for, and nothing has failed yet. Slot 144 is cleared by
+// sh_fr_step on the first frame that does not fit, so the scan stops at the
+// fault rather than walking the rest of the body to reach the same verdict.
+fn sh_fr_more(sptr: Int) -> Bool {
+  let cur = mem_read_int_raw(sptr, Int(120))
+  let lim = mem_read_int_raw(sptr, Int(128))
+  let ok  = mem_read_int_raw(sptr, Int(144))
+  bool_and(int_lt(cur, lim), int_eq(ok, Int(1)))
+}

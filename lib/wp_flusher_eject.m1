@@ -1,0 +1,77 @@
+// NESTED_IF_WORKAROUND (FORCED): contains 2 ifs (stream->dir, depth-1 trim) that cannot sit inside a branch.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_flusher_eject — the live half: write one sealed block, reclaim its pool
+// block, advance the durable watermark, publish to the read tier.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a split this out of wp_flusher_step so its
+// depth-1 trim stays a TOP-LEVEL `if`. Nested inside another branch, the
+// trim's untaken side fired and blocked the flusher on its first block — see
+// wp_flusher_step's header for the trace.
+//
+// The bundle arrives on wp-flush-live rather than as an argument because
+// `Value` is not a legal M1 surface type for a fn parameter.
+fn wp_flusher_eject(_u: Unit) -> Text {
+  let bundle = bchan_take(Text("wp-flush-live"))
+  let ptr    = list_get(bundle, Int(0))
+  let len    = list_get(bundle, Int(1))
+  let seq    = list_get(bundle, Int(2))
+  let status = list_get(bundle, Int(3))
+  let stream = list_get(bundle, Int(4))
+
+  // AXVERITY_EXTENT_WRITE_PATH 5d — THE BLOCK IS APPENDED, NOT WRITTEN.
+  //
+  // fs_write_raw wrote a whole NEW FILE through write_durable: temp + fsync +
+  // rename + parent-dir fsync, two fsyncs per block, the parent-dir one paid
+  // only because every block was a newly created file. slab_append_raw appends
+  // the block's bytes into slablock's active block and NEVER fsyncs; the SLA
+  // sweep does that, for every pending block at once, and seals by renaming
+  // `.part` to its final name — so "the file exists" and "the file is
+  // complete" stay the same statement.
+  //
+  // The handle is per-stream because a stream is a directory, and it is taken
+  // and put back rather than held because loop_while's Fn arguments carry one
+  // typed value — the same self-mailbox idiom wp-durable-cell uses.
+  let hch   = if int_gt(stream, Int(0)) { Text("wp-slab-p") } else { Text("wp-slab-s") }
+  let hnd   = bchan_take(hch)
+  let _ph   = bchan_send(hch, hnd)
+  let _w    = slab_append_raw(hnd, ptr, Int(0), len)
+  let _mark = cell_cas_raw(status, Int(2), Int(0))
+  let _fp   = bchan_send(Text("wp-free-pool"), list_of_2(ptr, status))
+
+  // AXVERITY_EXTENT_WRITE_PATH — WHAT THIS ADVANCES IS *APPENDED*, NOT DURABLE.
+  //
+  // This used to advance the durable watermark right here, and under 5d that
+  // became a lie. slab_append_raw NEVER fsyncs — it buffers into a growing
+  // `.part` — so the watermark was reporting "durable" the instant bytes hit
+  // the page cache. Before 5d, fs_write_raw fsynced and renamed synchronously,
+  // so advancing here and being durable were the same event; they are not any
+  // more, and every channel named "durable" would have been weaker than its
+  // name says. Silently: ack_bench would have been timing an append, and the
+  // read tier's wp-durable-block tap could fire for a block whose sealed name
+  // does not exist yet.
+  //
+  // So this cell tracks the highest seq APPENDED, and wp_flusher_tick promotes
+  // it to the durable watermark only after slab_tick's sweep has actually
+  // fsynced. Monotonic set-to-max, not a +1 step: one sweep covers every block
+  // appended since the last one, and the flusher is the only writer, so no
+  // retry loop is needed.
+  let apc    = bchan_take(Text("wp-appended-cell"))
+  let _apb   = bchan_send(Text("wp-appended-cell"), apc)
+  let acur   = cell_load_raw(apc)
+  let _aadv  = if int_gt(seq, acur) {
+                 cell_cas_raw(apc, acur, seq)
+               } else {
+                 int_add(Int(0), Int(0))
+               }
+
+  // Depth-1 trim, then send. Only this thread produces here and a consumer
+  // only removes, so the queue cannot grow between the length check and the
+  // send: after the trim there is room for exactly this one item, at any
+  // capacity >= 1.
+  let d    = bchan_len(Text("wp-durable-block"))
+  let _tr  = if int_gt(d, Int(0)) { list_get(bchan_take(Text("wp-durable-block")), Int(0)) }
+             else                 { int_add(Int(0), Int(0)) }
+  let _pub = bchan_send(Text("wp-durable-block"), list_of_3(seq, stream, len))
+
+  str_concat(Text("0"), Text(""))
+}

@@ -1,0 +1,70 @@
+// wp_seal_stream — hand one stream's filled staging buffer to the pool as a
+// sealed block.
+//
+// The write path used to seal by construction: a block was exactly PCAP bytes
+// of an undelimited stream, so "full" was an offset comparison and the length
+// was derivable by arithmetic anywhere in the pipeline. With F1v framing a
+// block ends wherever the next record would not fit, so its length is a fact
+// only the packer knows. It travels with the seal signal now, rather than
+// being recomputed downstream from seq * PCAP.
+//
+// The staging buffer is copied into the pool block rather than the pool block
+// being filled directly, because the two streams fill CONCURRENTLY and a pool
+// block is claimed only at seal time. That keeps one seal to one pool block
+// and leaves the pool of exactly 3 — and the backpressure it creates —
+// untouched, while still letting a structure block and a payload block be
+// half-full at the same instant.
+//
+// `dry` is the counting pass. hot_mem_write runs this whole packer once with
+// dry=1 to learn how many blocks the input produces, because every thread in
+// the pipeline is bounded by an exact loop_count and that count is no longer
+// derivable from the input's size. The counting pass takes no pool block,
+// copies nothing, and signals nothing — it only advances the same buffer
+// arithmetic, through the same code, so the count cannot drift from the run.
+//
+// AXVERITY_SPAN_RESTORE: THE FOOTER NOW COMES FROM THE PACKER. It used to
+// arrive in mem_controller's bundle, which was fine while it was a constant.
+// Under spanning, a block's footer says whether its first record is a
+// continuation and whether its last one continues out — facts only the packer
+// knows, and only at the moment it seals. mem_controller still sends its field
+// and it is still ignored here; leaving the bundle shape alone keeps the change
+// off wp_mc_assign entirely.
+//
+// The pending footer is per stream (the two streams seal independently) and is
+// reset to -1 after each seal, so a block never inherits its predecessor's
+// flags.
+//
+// Scratch: 40/56 staging base, 48/64 staging cursor (stride 16 by stream),
+// 32 pcap, 72 dry, 80 blocks, 96 the stream selector this call seals,
+// 112+sel*8 the pending footer for that stream's current block.
+fn wp_seal_stream(sptr: Int) -> Int {
+  let sel  = mem_read_int_raw(sptr, Int(96))
+  let bslot = int_add(Int(40), int_mul(sel, Int(16)))
+  let cslot = int_add(Int(48), int_mul(sel, Int(16)))
+  let sbuf = mem_read_int_raw(sptr, bslot)
+  let soff = mem_read_int_raw(sptr, cslot)
+  let dry  = mem_read_int_raw(sptr, Int(72))
+
+  let _live = if int_gt(dry, Int(0)) {
+                int_add(sptr, Int(0))
+              } else {
+                let bundle  = bchan_take(Text("wp-active-block"))
+                let dptr    = list_get(bundle, Int(0))
+                let dstatus = list_get(bundle, Int(2))
+                let dfooter = mem_read_int_raw(sptr, int_add(Int(112), int_mul(sel, Int(8))))
+                let _c      = mem_copy_raw(dptr, Int(0), sbuf, Int(0), soff)
+                let _f      = mem_write_int_raw(dptr, soff, dfooter)
+                let _mark   = cell_cas_raw(dstatus, Int(1), Int(2))
+                // [stream, total length including footer] — the two things
+                // mem_controller can no longer derive for itself.
+                let _done   = bchan_send(Text("wp-seal-done"),
+                                list_of_2(sel, int_add(soff, Int(8))))
+                int_add(sptr, Int(0))
+              }
+
+  let bl  = mem_read_int_raw(sptr, Int(80))
+  let _b  = mem_write_int_raw(sptr, Int(80), int_add(bl, Int(1)))
+  let _r  = mem_write_int_raw(sptr, cslot, Int(0))
+  let _rf = mem_write_int_raw(sptr, int_add(Int(112), int_mul(sel, Int(8))), int_sub(Int(0), Int(1)))
+  int_add(sptr, Int(0))
+}

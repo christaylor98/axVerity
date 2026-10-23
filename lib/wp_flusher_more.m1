@@ -1,0 +1,7 @@
+// wp_flusher_more — loop_while condition for the flusher: keep ejecting until
+// the end-of-stream sentinel has come down wp-flush.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. state = "<done>".
+fn wp_flusher_more(state: Text) -> Bool {
+  int_eq(str_to_int(state), Int(0))
+}

@@ -1,0 +1,62 @@
+// rt_bs_a — one probe of the lower-bound search over rt:A.
+//
+// Standard lower_bound: the window is [lo, hi), the probe compares record
+// `mid` against the query key, and the window strictly shrinks every
+// iteration, so loop_while's 64-iteration cap is a runaway backstop and never
+// a bound on the answer (64 probes span 2^64 records).
+//
+// ONE FILE PER ARRAY, and the duplication is deliberate. The array name has to
+// reach u32v_get as a Text, and a foreach/loop_while step takes exactly one
+// argument, so the alternatives are to read the name from a scratch map on
+// every probe — two Text literals plus a hash lookup, ~60 ns on top of ~90 ns
+// of real work, on the one path this rewrite exists to make cheap — or to
+// carry it in the accumulator, which loop_while would then clone per probe.
+// A Text LITERAL is one Arc::from (value.rs:152) and the pool builds it once
+// per call to this fn, so all three gets below share a single allocation.
+//
+// The comparison is lexicographic over three slots and SHORT-CIRCUITS: slot k1
+// is only read when k0 ties, k2 only when both tie. The unread slots are still
+// in range — every k is a slot of the same record — so nothing here depends on
+// the branch being lazy for safety, only for speed.
+//
+// THE SHORT-CIRCUIT DOES NOT MEAN ONE GET PER PROBE. It means one get while the
+// probe is still OUTSIDE the answer's prefix, and two or three once it is
+// inside — and the last few probes of any search are inside, because that is
+// where the boundary is. For a one-component query (`S??`) the tie path is the
+// narrow end of the descent; for `SVT` almost every late probe ties on k0.
+// Budget three gets per probe near the boundary, not one.
+//
+// Scratch, 8 bytes per slot (shared with rt_range, rt_hit and the scan):
+//    0  lo     window low          40  q0   query value at key position 0
+//    8  hi     window high         48  q1
+//   16  k0     record slot ranked  56  q2
+//   24  k1       first, second,    64  (unused)
+//   32  k2       third             72  end    range end (records, exclusive)
+//                                  80  cur    scan cursor / range start
+fn rt_bs_a(p: Int) -> Int {
+  let lo  = mem_read_int_raw(p, Int(0))
+  let hi  = mem_read_int_raw(p, Int(8))
+  let mid = int_div(int_add(lo, hi), Int(2))
+  let bse = int_mul(mid, Int(3))
+  let a0  = u32v_get(Text("rt:A"), int_add(bse, mem_read_int_raw(p, Int(16))))
+  let q0  = mem_read_int_raw(p, Int(40))
+  let lt  = if int_eq(a0, q0) {
+              let a1 = u32v_get(Text("rt:A"), int_add(bse, mem_read_int_raw(p, Int(24))))
+              let q1 = mem_read_int_raw(p, Int(48))
+              if int_eq(a1, q1) {
+                let a2 = u32v_get(Text("rt:A"), int_add(bse, mem_read_int_raw(p, Int(32))))
+                let q2 = mem_read_int_raw(p, Int(56))
+                int_lt(a2, q2)
+              } else {
+                int_lt(a1, q1)
+              }
+            } else {
+              int_lt(a0, q0)
+            }
+  let _w = if lt {
+             mem_write_int_raw(p, Int(0), int_add(mid, Int(1)))
+           } else {
+             mem_write_int_raw(p, Int(8), mid)
+           }
+  int_add(p, Int(0))
+}

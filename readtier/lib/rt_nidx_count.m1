@@ -1,0 +1,7 @@
+// rt_nidx_count — total ids ever minted, including superseded ones. Equal to
+// the length of the prev array, since every mint pushes exactly one entry —
+// the same identity that lets rt_nidx_insert use it as the counter.
+fn rt_nidx_count(u: Unit) -> Int {
+  let c = u32v_len(Text("rt:nidx:prev"))
+  int_add(c, Int(0))
+}

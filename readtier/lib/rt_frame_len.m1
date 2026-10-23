@@ -1,0 +1,8 @@
+// rt_frame_len — the framed length of the record whose varint starts at `off`
+// in `path`, or -1 when the block is not durable. rt_read_frame's counterpart,
+// split out for the same reason: see that fn's header.
+fn rt_frame_len(path: Text, off: Int) -> Int {
+  let have = int_gt(str_len(path), Int(0))
+  let out  = if have { rt_rec_len(path, off) } else { int_sub(Int(0), Int(1)) }
+  int_add(out, Int(0))
+}

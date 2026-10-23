@@ -1,0 +1,18 @@
+// rt_bench_read_step — one point read, as a foreach callback.
+//
+// The name varies with the index so the measurement is not one cached path
+// repeated: each iteration resolves a different name to a different RID, in a
+// different block once the population is large enough to span several. That
+// matters here because a point read is dominated by locating and opening the
+// block, not by decoding the record.
+//
+// It goes through the full public path — name to RID to bytes — rather than
+// timing rt_read_rid on a pre-resolved id, because that is the operation a
+// caller actually performs.
+fn rt_bench_read_step(i: Int) -> Int {
+  let nsrc = int_max(Int(1), str_to_int(map_get(Text("rt:bench"), Text("nsrc"))))
+  let name = str_concat(Text("s"), int_to_str(int_mod(i, nsrc)))
+  let rid  = rt_rid_of(name)
+  let len  = rt_read_rid_len(rid)
+  int_add(len, Int(0))
+}

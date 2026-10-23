@@ -1,0 +1,11 @@
+// rt_query_selftest — W2/W3/W4 correctness. Builds the fixture graph, checks
+// every binding pattern by cardinality and by membership, then the degenerate
+// cases and the supersession shape. Returns the failure count.
+fn rt_query_selftest(u: Unit) -> Int {
+  let _f = rt_qt_fixture(Unit())
+  let a  = rt_qt_cards(Unit())
+  let b  = rt_qt_members(Unit())
+  let c  = rt_qt_edges(Unit())
+  let d  = rt_qt_super(Unit())
+  int_add(int_add(a, b), int_add(c, d))
+}

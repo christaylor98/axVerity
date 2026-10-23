@@ -1,0 +1,60 @@
+// sh_fr_step — account for ONE record frame at the cursor and advance past it.
+//
+// The ADMIT body is the writer's input format: repeat { i64 little-endian
+// length, that many bytes } (wp_write_step.m1:96 advances its read cursor by
+// 8+len). So the body is self-delimiting, and how many records it holds is a
+// fact about the bytes rather than a claim the client makes about them.
+//
+// A frame is accounted for only if all three hold:
+//   * there are 8 bytes left to read a length out of,
+//   * the length is not negative, and
+//   * the record it claims fits inside the body.
+// Otherwise slot 144 is cleared and the scan stops. A length is read with
+// mem_read_int_raw, which is the 8-byte signed load this format was designed
+// around, so there is no byte-level decoding here and none of CLAUDE.md §8's
+// hazard applies — but a NEGATIVE length is still checked for, because the
+// bytes come off a socket and nothing upstream guarantees they are a corpus.
+//
+// A zero-length frame is legal AS A FRAME and is counted as one: the writer
+// emits one for a zero-length record, and refusing it as malformed FRAMING
+// would narrow the accepted surface for a reason the format does not have. It
+// fails the separator check below instead, which is a different verdict with a
+// different message.
+//
+// THE SEPARATOR CHECK RIDES THIS WALK (AXVERITY_SILENT_LOSS_FIX_V1 P9).
+// sh_seps2 is called from here, not from a second pass over the body, because
+// this fn already holds the one thing a second pass would have to recompute:
+// where this record starts and how long it is. Slot 152 holds the 1-based
+// ordinal of the FIRST record whose separator count is not two, or 0 if every
+// record is a triple.
+//
+// The check stops running once slot 152 is set. One int compare per remaining
+// frame is the whole cost of a body that has already failed, so a client that
+// sends 300k bad records pays for one check and 299,999 comparisons rather
+// than 300k text conversions. The walk itself is NOT stopped: the frame count
+// still has to be exact, because the count-versus-body check is a separate
+// verdict and answering it with a partial count would report a framing fault
+// that did not happen.
+fn sh_fr_step(sptr: Int) -> Int {
+  let buf = mem_read_int_raw(sptr, Int(16))
+  let cur = mem_read_int_raw(sptr, Int(120))
+  let lim = mem_read_int_raw(sptr, Int(128))
+  let cnt = mem_read_int_raw(sptr, Int(136))
+
+  let room = int_lte(int_add(cur, Int(8)), lim)
+  let rlen = if room { mem_read_int_raw(buf, cur) } else { int_sub(Int(0), Int(1)) }
+  let next = int_add(int_add(cur, Int(8)), rlen)
+  let good = bool_and(room, bool_and(int_gte(rlen, Int(0)), int_lte(next, lim)))
+
+  let _c = if good { mem_write_int_raw(sptr, Int(120), next) }
+           else    { mem_write_int_raw(sptr, Int(144), Int(0)) }
+  let _n = if good { mem_write_int_raw(sptr, Int(136), int_add(cnt, Int(1))) }
+           else    { io_print(Text("")) }
+
+  let sfa = mem_read_int_raw(sptr, Int(152))
+  let chk = bool_and(good, int_eq(sfa, Int(0)))
+  let trp = if chk { sh_seps2(buf, int_add(cur, Int(8)), rlen) } else { Bool(true) }
+  let _s  = if trp { io_print(Text("")) }
+            else   { mem_write_int_raw(sptr, Int(152), int_add(cnt, Int(1))) }
+  int_add(sptr, Int(0))
+}

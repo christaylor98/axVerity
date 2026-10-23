@@ -1,0 +1,8 @@
+// rt_q_svt — everything bound. NOT a special case any more: it is a range of
+// at most one record over rt:A, found by the same two bounds as every other
+// pattern. The trie needed a distinct membership probe against its leaf set;
+// a sorted array does not, because a fully-bound key is just the narrowest
+// prefix.
+fn rt_q_svt(s: Text, v: Text, t: Text) -> Int {
+  rt_range(Int(0), Int(3), rt_nidx_lookup(s), rt_nidx_lookup(v), rt_nidx_lookup(t))
+}

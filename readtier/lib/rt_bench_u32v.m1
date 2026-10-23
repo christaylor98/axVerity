@@ -1,0 +1,41 @@
+// rt_bench_u32v — U6: what does a u32v call cost when it is reached through M1
+// glue rather than from Rust?
+//
+// The inherited bridge-side numbers are u32v_push 24.73 ns, u32v_get 26.20 ns,
+// and 31.38 ns/probe in binary-search shape. Those were measured INSIDE the
+// bridge crate. This measures the same calls from M1, through the generated
+// glue, which is the substrate the read tier actually runs in
+// (MEASURE_IN_THE_SHIPPING_SUBSTRATE — the precedent is the resolve that read
+// 33 ms in Rust and 369 s in M1).
+//
+// The predecessor intent's confound is gone: the glue now compiles at
+// -C opt-level=3 (main.rs:340, 387, 617), so this is a clean number rather
+// than a measurement of unoptimized shim code.
+//
+// Three arms plus a control, all over the same array:
+//   t0  loop + crossing into an M1 fn, no u32v call        (the control)
+//   t1  one get   -> t1 - t0 is a get PLUS its Text literal
+//   t3  three gets-> (t3 - t1) / 2 is the MARGINAL get, literal already paid
+//   tp  one push
+//
+// The array is filled first so every get is in range; u32v_get is strict and
+// an out-of-range index panics rather than returning a sentinel.
+fn rt_bench_u32v(n: Int) -> Int {
+  let _v  = u32v_new(Text("rt:u"))
+  let ep  = rt_u32v_tp(n)
+  let e0  = rt_u32v_t0(n)
+  let e1  = rt_u32v_t1(n)
+  let e3  = rt_u32v_t3(n)
+  let nn  = int_max(n, Int(1))
+  let _a  = io_println(str_concat(Text("u32v_reps="), int_to_str(n)))
+  let _b  = io_println(str_concat(Text("u32v_len="), int_to_str(u32v_len(Text("rt:u")))))
+  let _c  = io_println(str_concat(Text("step_control_ns="), int_to_str(int_div(e0, nn))))
+  let _d  = io_println(str_concat(Text("push_step_ns="), int_to_str(int_div(ep, nn))))
+  let _e  = io_println(str_concat(Text("get1_step_ns="), int_to_str(int_div(e1, nn))))
+  let _f  = io_println(str_concat(Text("get3_step_ns="), int_to_str(int_div(e3, nn))))
+  let _g  = io_println(str_concat(Text("push_net_ns="), int_to_str(int_div(int_sub(ep, e0), nn))))
+  let _h  = io_println(str_concat(Text("get_first_net_ns="), int_to_str(int_div(int_sub(e1, e0), nn))))
+  let _i  = io_println(str_concat(Text("get_marginal_ns="),
+              int_to_str(int_div(int_sub(e3, e1), int_mul(nn, Int(2))))))
+  int_add(Int(0), Int(0))
+}

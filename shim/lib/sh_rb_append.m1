@@ -1,0 +1,17 @@
+// sh_rb_append — append one reply frame to the index thread's reply buffer
+// (AXVERITY_SHIM_CONCURRENT_CONNS_V1). The buffer's record is at this thread's map `sh` key `rb`:
+// +0 data ptr, +8 fill, +16 cap, +24 overflow flag. Appending is a copy of the frame only (linear in the
+// reply); a reply that does not fit raises the flag and sh_index_step answers OVERSIZE instead -- a
+// truncated reply is never sent as though it were complete.
+fn sh_rb_append(frame: Bytes) -> Unit {
+  let rb   = str_to_int(map_get(Text("sh"), Text("rb")))
+  let data = mem_read_int_raw(rb, Int(0))
+  let fill = mem_read_int_raw(rb, Int(8))
+  let cap  = mem_read_int_raw(rb, Int(16))
+  let n    = bytes_len(frame)
+  let fits = int_lte(int_add(fill, n), cap)
+  let _w   = if fits { mem_write_raw(data, fill, frame) } else { Unit() }
+  let _f   = if fits { mem_write_int_raw(rb, Int(8), int_add(fill, n)) }
+             else    { mem_write_int_raw(rb, Int(24), Int(1)) }
+  Unit()
+}

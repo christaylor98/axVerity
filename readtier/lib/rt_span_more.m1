@@ -1,0 +1,6 @@
+// rt_span_more — loop condition for both spanning-chain walks. Slot 168 is the
+// done flag: a walk ends when it has consumed a LAST fragment, or when the
+// chain runs out of blocks (a truncated store), whichever comes first.
+fn rt_span_more(sptr: Int) -> Bool {
+  bool_and(int_eq(mem_read_int_raw(sptr, Int(168)), Int(0)), Bool(true))
+}

@@ -1,0 +1,45 @@
+// rt_out_emit — add one triple of internal ids to the result set.
+//
+// PHASE A. DEDUP_BY_ADJACENCY_NOT_BY_HASH. This used to render three ids to
+// decimal, glue them into one Text with two separators, and probe a Text-keyed
+// set — about thirteen heap allocations to learn one bit. It now compares the
+// three ids against the PREVIOUS record and pushes three u32.
+//
+// WHY ADJACENCY IS SUFFICIENT, and it is a property of the SOURCE, not of the
+// output. u32v_sort3 takes all three slots as its key, so the comparison is
+// total over the record and two records compare equal only when they are
+// identical (u32v.rs:200-206). A sealed projection therefore holds identical
+// records CONSECUTIVELY, and rt_scan walks one CONTIGUOUS range of it, so a
+// duplicate can only ever arrive immediately after the record it duplicates.
+// The set was never structurally necessary — it was inherited from the trie,
+// where dedup happened at insert because a trie has no ordering to lean on.
+//
+// THE PREVIOUS RECORD LIVES IN RAW SCRATCH (88/96/104), not in rt:out's own
+// tail. Reading it back out of the array would be one u32v_len plus three
+// u32v_get, i.e. four name-keyed HashMap probes per result; three raw reads cost
+// no hashing at all. rt_range seeds all three slots with -1, which no stored
+// id can equal because u32v_push rejects a negative value outright, so the
+// first record of every range is always fresh without a first-time branch.
+//
+// Returns 1 when the record was new and 0 when it was a duplicate. Nothing
+// reads it today — rt_out_count is the array's own length — but a scan that
+// silently discarded results without saying so would be the exact shape of the
+// silent-loss defects this repo has already paid for once.
+fn rt_out_emit(p: Int, s: Int, v: Int, t: Int) -> Int {
+  let p0  = mem_read_int_raw(p, Int(88))
+  let p1  = mem_read_int_raw(p, Int(96))
+  let p2  = mem_read_int_raw(p, Int(104))
+  let dup = bool_and(int_eq(p0, s), bool_and(int_eq(p1, v), int_eq(p2, t)))
+  let r   = if dup {
+              int_add(Int(0), Int(0))
+            } else {
+              let _s0 = u32v_push(Text("rt:out"), s)
+              let _s1 = u32v_push(Text("rt:out"), v)
+              let _s2 = u32v_push(Text("rt:out"), t)
+              let _w0 = mem_write_int_raw(p, Int(88),  s)
+              let _w1 = mem_write_int_raw(p, Int(96),  v)
+              let _w2 = mem_write_int_raw(p, Int(104), t)
+              int_add(Int(1), Int(0))
+            }
+  int_add(r, Int(0))
+}

@@ -1,0 +1,6 @@
+// rt_q_sxx — source bound. Prefix {S} is served by rt:A's first key slot.
+// An unknown name resolves to -1, which sorts below every stored id, so both
+// bounds land together and the answer is empty without a branch.
+fn rt_q_sxx(s: Text) -> Int {
+  rt_range(Int(0), Int(1), rt_nidx_lookup(s), Int(0), Int(0))
+}

@@ -1,0 +1,23 @@
+// sh_query_step — loop_count body for streaming one QUERY result set.
+//
+// One frame per row, drained straight out of the named result store with
+// rt_out_at. Nothing is accumulated: building the answer as one joined Text
+// would name a growing Text at every iteration and cost O(R^2) in exactly the
+// way the list-fold finding describes (CLAUDE.md §7), and materialising it as
+// an M1 list is the very thing rt_out_count's own header says the result-store
+// API exists to avoid. Streaming is also what the contract recommends (T3).
+//
+// The cursor lives in scratch, not in the loop accumulator, for the same
+// pointer-threading reason as the read loop.
+//
+// Each row is rendered out of the tier's id space by sh_name3 before it goes on
+// the wire, reading the tier's published reverse map per row and retaining
+// nothing between rows or between ops. See sh_name3 for why nothing is cached.
+fn sh_query_step(sptr: Int) -> Int {
+  let conn = mem_read_int_raw(sptr, Int(8))
+  let i    = mem_read_int_raw(sptr, Int(72))
+  let row  = sh_name3(rt_out_at(i))
+  let _s   = sh_reply(conn, Int(0), row)
+  let _c   = mem_write_int_raw(sptr, Int(72), int_add(i, Int(1)))
+  int_add(sptr, Int(0))
+}

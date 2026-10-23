@@ -1,0 +1,5 @@
+// rt_q_xvt — verb and target bound. Prefix {V,T} is rt:B's first two key
+// slots; the records in the range carry the sources.
+fn rt_q_xvt(v: Text, t: Text) -> Int {
+  rt_range(Int(1), Int(2), rt_nidx_lookup(v), rt_nidx_lookup(t), Int(0))
+}

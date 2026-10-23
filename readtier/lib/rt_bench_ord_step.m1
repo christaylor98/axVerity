@@ -1,0 +1,11 @@
+// rt_bench_ord_step — one point read at a FIXED ordinal, as a foreach callback.
+//
+// Fixed on purpose. rt_bench_read varies the name and so mixes ordinals
+// together; this one holds the ordinal still so the cost can be attributed to
+// it. If a point read were a seek, every ordinal would cost the same; if it is
+// a scan, cost rises with the ordinal. That is the whole experiment.
+fn rt_bench_ord_step(i: Int) -> Int {
+  let rid = str_to_int(map_get(Text("rt:bench"), Text("rid")))
+  let len = rt_read_rid_len(rid)
+  int_add(len, Int(0))
+}

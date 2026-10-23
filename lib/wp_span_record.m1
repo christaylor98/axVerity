@@ -1,0 +1,80 @@
+// NESTED_IF_WORKAROUND (FORCED): has its own `if`, so it cannot be inlined into
+// a branch. Revert scope — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+//
+// wp_span_record — write ONE record too large to fit an empty block, as a chain
+// of unframed fragments across consecutive blocks of its own stream.
+//
+// AXVERITY_SPAN_RESTORE. This is the mechanism the original write path had and
+// F1v traded away for record identity — see experiments/continuation/
+// FORMAT-SPAN.md for why that trade was never necessary.
+//
+// Shape. The record begins at offset 0 of a fresh block, so a partially filled
+// buffer is sealed first and its tail wasted. That is the whole cost of
+// spanning: at most one block per spanning record, 0.13% for a 3 GB record at a
+// 4 MiB block. Then `nfull` blocks are filled edge to edge with raw body bytes,
+// and the remainder is laid at offset 0 of the next block, whose footer records
+// how many leading bytes belong to the record. Ordinary framed records resume
+// immediately after it, in the same block.
+//
+//   nfull = (len - 1) / pcap        tail = len - nfull * pcap,  1 <= tail <= pcap
+//
+// Nothing stores the total length. A reader derives it by walking the chain,
+// which is exactly what keeps the three-byte prefix sufficient — no varint
+// anywhere has to express 3 GB.
+//
+// nfull CAN BE ZERO, and that case is NOT a degenerate one to wave at.
+// Spanning is chosen because a record cannot be FRAMED, which is not the same
+// question as whether it FITS: the three-byte prefix stops at 2097151, so at
+// the 4 MiB default capacity every record from 2097152 up to pcap spans while
+// still fitting one block, and its chain has no full fragment at all. Such a
+// block cannot be flagged 1 (last fragment): flags 1 says the leading bytes
+// FINISH a record begun elsewhere, and nothing began it, so a reader
+// classifying blocks by their own footers would find a chain with no start and
+// index nothing — the record admitted, fsynced and invisible, with the writer
+// exiting 0. It is flagged 4 instead: ONE COMPLETE UNFRAMED RECORD, this
+// block, no continuation in either direction. Measured before this existed: a
+// 3145728-byte triple at the shipping capacity gave rebuild_records=2 of 3 and
+// rid=-1 for every name it carried (tests/run-readtier-durable-test.sh T9).
+//
+// The inner loop_count is the same nesting wp_dc_step already does. It appears
+// once textually, so there is no identical call for CCall CSE to merge it with
+// (CLAUDE.md section 6b).
+fn wp_span_record(sptr: Int) -> Int {
+  let iptr = mem_read_int_raw(sptr, Int(0))
+  let roff = mem_read_int_raw(sptr, Int(16))
+  let len  = mem_read_int_raw(iptr, roff)
+  let sel  = mem_read_int_raw(sptr, Int(96))
+  let cslot = int_add(Int(48), int_mul(sel, Int(16)))
+  let bslot = int_add(Int(40), int_mul(sel, Int(16)))
+  let fslot = int_add(Int(112), int_mul(sel, Int(8)))
+  let pcap = mem_read_int_raw(sptr, Int(32))
+
+  // A spanning record starts a block. Seal whatever is already staged; its
+  // pending footer is whatever it was (-1 for an ordinary block, or a tail
+  // marker if this stream's block began with the end of an earlier span).
+  let bo   = mem_read_int_raw(sptr, cslot)
+  let _sl  = if int_gt(bo, Int(0)) { wp_seal_stream(sptr) } else { int_add(sptr, Int(0)) }
+
+  let nfull = int_div(int_sub(len, Int(1)), pcap)
+  let _s0   = mem_write_int_raw(sptr, Int(128), int_add(roff, Int(8)))
+  let _s1   = mem_write_int_raw(sptr, Int(136), len)
+  let _s2   = mem_write_int_raw(sptr, Int(144), Int(1))
+  let _fl   = loop_count(nfull, sptr, wp_span_block)
+
+  // The tail, and what it is depends on whether anything preceded it.
+  //   1 = this block BEGINS WITH continuation payload; taillen says where
+  //       ordinary records resume after it.
+  //   4 = this block IS the whole record, unframed, at offset 0; taillen is
+  //       its length. Reached only when nfull is 0 — see the header.
+  // Both are the same write; only the flag word differs, so this stays a
+  // top-level `if` over two literals rather than a second code path.
+  let tflag = if int_eq(nfull, Int(0)) { Int(4) } else { Int(1) }
+  let src   = mem_read_int_raw(sptr, Int(128))
+  let tail  = mem_read_int_raw(sptr, Int(136))
+  let bptr  = mem_read_int_raw(sptr, bslot)
+  let _c    = mem_copy_raw(bptr, Int(0), iptr, src, tail)
+  let _cur  = mem_write_int_raw(sptr, cslot, tail)
+  let _f    = mem_write_int_raw(sptr, fslot,
+                int_add(int_mul(tflag, Int(4294967296)), tail))
+  int_add(sptr, Int(0))
+}

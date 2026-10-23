@@ -1,0 +1,16 @@
+// rt_nidx_prev — the id this id superseded, or -1 at the end of the chain.
+// Walking head -> prev -> prev ... enumerates a name's versions newest-first.
+//
+// u32v_get is STRICT — an unknown name or an out-of-range index panics, because
+// there is no u32 that could mean "absent" (u32v.rs). So the range test is here
+// rather than in the array: an id that was never minted, and a negative id,
+// both answer -1 the way the map-backed version did for a missing key.
+fn rt_nidx_prev(id: Int) -> Int {
+  let n = u32v_len(Text("rt:nidx:prev"))
+  let r = if bool_and(int_gte(id, Int(0)), int_lt(id, n)) {
+            int_sub(u32v_get(Text("rt:nidx:prev"), id), Int(1))
+          } else {
+            int_sub(Int(0), Int(1))
+          }
+  int_add(r, Int(0))
+}

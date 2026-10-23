@@ -1,0 +1,13 @@
+// rt_bench_locality — the control run: populate at n, then measure the two
+// fan-out patterns both cold (a fresh key each rep) and hot (one pinned key).
+fn rt_bench_locality(n: Int) -> Int {
+  let _r  = rt_reset_all(Unit())
+  let _p  = rt_populate(n)
+  let _c1 = rt_bench_pattern(Int(1), n, Int(1000))
+  let _h1 = rt_bench_hot(Int(1), n, Int(1000))
+  let _c4 = rt_bench_pattern(Int(4), n, Int(1000))
+  let _h4 = rt_bench_hot(Int(4), n, Int(1000))
+  let _c3 = rt_bench_pattern(Int(3), n, Int(1000))
+  let _h3 = rt_bench_hot(Int(3), n, Int(1000))
+  int_add(Int(0), Int(0))
+}

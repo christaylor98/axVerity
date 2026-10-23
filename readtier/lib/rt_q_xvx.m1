@@ -1,0 +1,6 @@
+// rt_q_xvx — verb bound. Prefix {V} has no path in rt:A (V is ranked second
+// there); it is served by rt:B's first key slot. This is the pattern that
+// motivated the second ordering.
+fn rt_q_xvx(v: Text) -> Int {
+  rt_range(Int(1), Int(1), rt_nidx_lookup(v), Int(0), Int(0))
+}

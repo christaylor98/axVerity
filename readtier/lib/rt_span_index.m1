@@ -1,0 +1,60 @@
+// NESTED_IF_WORKAROUND (FORCED): has its own `if`s.
+// rt_span_index — reassemble one spanning record and index it exactly as an
+// ordinary one.
+//
+// AXVERITY_SPAN_RESTORE stage 3. Called from rt_dblk_scan when a block's footer
+// says the block BEGINS a record — flags 2 (a first fragment, the record
+// continues) or flags 4 (the record is complete in this block, unframed). The
+// record's other blocks contribute no records of their own, so nothing is
+// indexed twice: a middle fragment scans nothing, and a last fragment scans
+// only the ordinary records that follow its tail.
+//
+// The locator is the same shape every other record gets — (this block's seq,
+// this stream, offset 0) — because a spanning record begins at offset 0 of its
+// first block by construction. rt_read_rid resolves it by reading this same
+// footer and walking the same chain rather than by decoding a length prefix
+// that is not there; see that fn.
+//
+// Slot 0 is repointed at the reassembly buffer for the rt_dindex_rec call.
+// rt_dblk_scan frees its own staged block from a LOCAL, not from slot 0, so
+// clobbering it here is safe and deliberate.
+//
+// PEAK MEMORY IS A FUNCTION OF THE LARGEST RECORD. rt_dblk_scan is careful to
+// hold one block at a time so peak tracks block size rather than store size;
+// this fn holds one whole RECORD, and since max_record is policy with no
+// structural bound under it, that is the one place a deployment can make the
+// rebuild's memory its own problem. Deliberately not capped here: a cap would
+// be a number invented at this layer, and refusing to index what the writer
+// accepted is the failure this whole intent exists to remove.
+fn rt_span_index(sptr: Int) -> Int {
+  let blkid = mem_read_int_raw(sptr, Int(24))
+
+  let _c0 = mem_write_int_raw(sptr, Int(152), Int(0))
+  let _c1 = mem_write_int_raw(sptr, Int(160), blkid)
+  let _c2 = mem_write_int_raw(sptr, Int(168), Int(0))
+  let _cl = loop_while(sptr, rt_span_more, rt_span_count, Int(100000000))
+  let total = mem_read_int_raw(sptr, Int(152))
+
+  let bcap = int_add(total, Int(64))
+  let res  = mem_reserve_raw(bcap)
+  let buf  = tuple_field(res, Int(0))
+  let _b0 = mem_write_int_raw(sptr, Int(136), buf)
+  let _b1 = mem_write_int_raw(sptr, Int(144), total)
+  let _b2 = mem_write_int_raw(sptr, Int(152), Int(0))
+  let _b3 = mem_write_int_raw(sptr, Int(160), blkid)
+  let _b4 = mem_write_int_raw(sptr, Int(168), Int(0))
+  let _bl = loop_while(sptr, rt_span_more, rt_span_copy, Int(100000000))
+
+  let _i0 = mem_write_int_raw(sptr, Int(0),   buf)
+  let _i1 = mem_write_int_raw(sptr, Int(56),  Int(0))
+  let _i2 = mem_write_int_raw(sptr, Int(64),  total)
+  let _i3 = mem_write_int_raw(sptr, Int(120), Int(0))
+  let _ix = rt_dindex_rec(sptr)
+  // Count it as a scanned record, the same as rt_dscan_step does for a framed
+  // one. Without this a store holding spanning records reports fewer records
+  // than it has, and "records rebuilt" is the number the cold suite asserts on.
+  let nr  = mem_read_int_raw(sptr, Int(72))
+  let _nr = mem_write_int_raw(sptr, Int(72), int_add(nr, Int(1)))
+  let _fr = mem_free_raw(buf, bcap)
+  int_add(sptr, Int(0))
+}

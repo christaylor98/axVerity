@@ -1,0 +1,22 @@
+// rt_bench_read — time the point-read path over a rebuilt store.
+//
+// Reported per operation, where one operation is a full name -> RID -> bytes
+// round trip including the two fs_file_exists probes that locate the block and
+// the block scan that walks to the ordinal. There is no cache anywhere in that
+// path by design: nothing between a RID and its bytes can fall out of date
+// with the store, which is the property the single-integer RID was chosen to
+// preserve, and the cost of it is that every read re-opens the block.
+fn rt_bench_read(reps: Int) -> Int {
+  let n    = str_to_int(map_get(Text("rt:d"), Text("n")))
+  let _s   = map_put(Text("rt:bench"), Text("nsrc"),
+               int_to_str(int_max(Int(1), int_div(n, Int(4)))))
+  let t0   = now_unix_nanos(Unit())
+  let _f   = foreach(range(Int(0), reps), rt_bench_read_step)
+  let t1   = now_unix_nanos(Unit())
+  let el   = int_sub(t1, t0)
+  let _p   = io_println(str_concat(Text("point_read reps="),
+               str_concat(int_to_str(reps),
+                 str_concat(Text(" ns_per_op="),
+                   int_to_str(int_div(el, int_max(reps, Int(1))))))))
+  int_add(Int(0), Int(0))
+}

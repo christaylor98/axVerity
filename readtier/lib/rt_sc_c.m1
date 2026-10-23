@@ -1,0 +1,31 @@
+// rt_sc_c — emit one record of a range over rt:C.
+//
+// EVERY PROJECTION STORES (s, v, t) IN THAT SLOT ORDER, so this reads slot 0,
+// 1, 2 whatever the store's sort order is and the triple is already canonical.
+// The old rt_emit had to permute three arguments back out of the rotation the
+// trie layout imposed, with the rotation carried in a Text ("SVT"/"VTS"/"TSV")
+// and compared per emitted result. There is nothing to permute now: the
+// rotation lives in the sort key and nowhere else.
+//
+// NOTHING IS RENDERED HERE ANY MORE (PHASE A,
+// AXVERITY_READTIER_READPATH_LATENCY_V1). The three ids used to become decimal
+// Text at this line and be glued into the canonical S,V,T key so a Text-keyed
+// set could dedup them. They now cross to rt_out_emit as three Ints and land in
+// a u32v as three u32; the decimal rendering happens in rt_out_at, once per
+// element a caller actually asks for, and a count-only caller never pays it.
+// The scratch pointer goes with them because that is where the previous record
+// lives — see rt_out_emit for why adjacency is a sufficient dedup here.
+//
+// One file per array for the same reason rt_bs_c is: the array name must
+// reach u32v_get as a Text and a loop_while step takes one argument. All three
+// gets share one pool literal.
+fn rt_sc_c(p: Int) -> Int {
+  let cur = mem_read_int_raw(p, Int(80))
+  let bse = int_mul(cur, Int(3))
+  let s   = u32v_get(Text("rt:C"), bse)
+  let v   = u32v_get(Text("rt:C"), int_add(bse, Int(1)))
+  let t   = u32v_get(Text("rt:C"), int_add(bse, Int(2)))
+  let _e  = rt_out_emit(p, s, v, t)
+  let _c  = mem_write_int_raw(p, Int(80), int_add(cur, Int(1)))
+  int_add(p, Int(0))
+}

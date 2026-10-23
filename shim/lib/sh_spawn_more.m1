@@ -1,0 +1,4 @@
+// sh_spawn_more — sh_spawn_acceptors' loop predicate: fewer than 16 started. State "<lis> TAB <k>".
+fn sh_spawn_more(st: Text) -> Bool {
+  int_lt(str_to_int(str_after(st, chr(Int(9)))), Int(16))
+}

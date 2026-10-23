@@ -1,0 +1,27 @@
+// rt_ub — the UPPER bound of a partially bound range: bump the successor key,
+// then search for it.
+//
+// Split out of rt_range so the bump is REACHABLE ONLY WHEN A SECOND SEARCH
+// FOLLOWS IT. It used to sit inline as three unconditional mem_write_int_raw,
+// which meant nk=3 wrote a successor key for a search F1 had already removed —
+// three raw writes feeding nothing.
+//
+// Only nk = 1 or 2 reach here; nk=0 has no bound to bump and nk=3 ends at
+// rt_hit. So ONE conditional write replaces three unconditional ones even on
+// the paths that do search: the components that are not being bumped already
+// hold what rt_range's setup wrote, and rewriting them with their own values
+// was work that could not change an outcome.
+//
+// The window is reset to [st, nrec) rather than [0, nrec): the end of a range
+// is never before its start, so half of it is already excluded.
+fn rt_ub(store: Int, p: Int, nk: Int, q0: Int, q1: Int, st: Int, nrec: Int) -> Int {
+  let _b = if int_eq(nk, Int(1)) {
+             mem_write_int_raw(p, Int(40), int_add(q0, Int(1)))
+           } else {
+             mem_write_int_raw(p, Int(48), int_add(q1, Int(1)))
+           }
+  let _l = mem_write_int_raw(p, Int(0), st)
+  let _h = mem_write_int_raw(p, Int(8), nrec)
+  let r  = rt_lb(store, p)
+  int_add(r, Int(0))
+}

@@ -1,0 +1,47 @@
+// rt_bs_o — one probe of the lower-bound search over rt:out, the result set.
+//
+// PHASE A. The fourth member of the rt_bs_* family, and it exists for the same
+// reason the other three do: the array name has to reach u32v_get as a Text and
+// a loop_while step takes exactly one argument, so the name is a pool literal
+// in a file of its own rather than something selected at runtime
+// (iter.rs:3-7). A Text literal is one Arc::from at fn entry (value.rs:152),
+// shared by all three gets below.
+//
+// SIMPLER THAN rt_bs_a/_b/_c IN ONE RESPECT: rt:out has no rotation. It is
+// sealed with u32v_sort3(0, 1, 2), so the key slots are the record slots and
+// this reads 0, 1, 2 directly instead of the ranked slots rt_range parks at
+// scratch 16/24/32. Nothing here is store-parameterised.
+//
+// The comparison is lexicographic over three slots and SHORT-CIRCUITS, exactly
+// as rt_bs_a's does; see that file for why a short-circuit does not mean one
+// get per probe.
+//
+// Scratch: 0 = lo, 8 = hi, 40/48/56 = q0/q1/q2. Same offsets rt_range uses, so
+// a reader of one file recognises the other; rt_out_has reserves its own block.
+fn rt_bs_o(p: Int) -> Int {
+  let lo  = mem_read_int_raw(p, Int(0))
+  let hi  = mem_read_int_raw(p, Int(8))
+  let mid = int_div(int_add(lo, hi), Int(2))
+  let bse = int_mul(mid, Int(3))
+  let a0  = u32v_get(Text("rt:out"), bse)
+  let q0  = mem_read_int_raw(p, Int(40))
+  let lt  = if int_eq(a0, q0) {
+              let a1 = u32v_get(Text("rt:out"), int_add(bse, Int(1)))
+              let q1 = mem_read_int_raw(p, Int(48))
+              if int_eq(a1, q1) {
+                let a2 = u32v_get(Text("rt:out"), int_add(bse, Int(2)))
+                let q2 = mem_read_int_raw(p, Int(56))
+                int_lt(a2, q2)
+              } else {
+                int_lt(a1, q1)
+              }
+            } else {
+              int_lt(a0, q0)
+            }
+  let _w = if lt {
+             mem_write_int_raw(p, Int(0), int_add(mid, Int(1)))
+           } else {
+             mem_write_int_raw(p, Int(8), mid)
+           }
+  int_add(p, Int(0))
+}

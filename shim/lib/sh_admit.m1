@@ -1,0 +1,339 @@
+// sh_admit — the ADMIT verb, batch admission (§4.1).
+//
+// Body is `varint(count)` then the raw record stream, byte for byte what
+// build/wp-slice reads from a file today: repeat { i64 little-endian length,
+// that many bytes } (wp_write_step.m1:96 advances the read cursor by 8+len).
+// The bytes go from the frame buffer straight to a file with one mem_read_raw
+// and one fs_write_bytes; they are never decoded, reordered or re-framed here,
+// because §5.2 property 5 says the transport carries calls and does not decide
+// about them. That is also what makes the byte-identical claim testable: an
+// ADMIT of a corpus and a direct invocation over that same corpus file hand the
+// writer the same bytes.
+//
+// ── THE SPAWN (AXVERITY_SHIM_BRIDGE_PRIMS_V1, closing R15) ──────────────────
+// Round 2 stopped here because M1 could not express "start the writer". It can
+// now: proc_run(program, argv) spawns, waits, and reports. Everything ABOUT the
+// spawn is decided here rather than in Rust (hard limit NO_ORCHESTRATION_IN_RUST)
+// — which binary, which arguments, what a given result means, and what the
+// client is told. The primitive contributes no policy at all.
+//
+// THE WRITER PATH COMES FROM ARGV. bin/axshim passes it as argv[3], absolute,
+// because this process has cd'd into the store root and a relative path would
+// resolve against the store rather than the repo. The child inherits that cwd,
+// which is exactly why no chdir primitive is needed (R16 stays closed): one
+// process, one store, and the store is where this process already stands.
+//
+// ── EVERY RECORD MUST BE A TRIPLE (P9) ──────────────────────────────────────
+// A record carrying a third 0x1F is not a triple with a separator in its
+// target; the durable format has no escaping, so there is no reading of those
+// bytes under which it is one. It used to be admitted, counted, indexed, and
+// returned as a FOUR-field row that breaks the client's row parser -- the one
+// thing Appendix A.5 tells a consumer cannot happen. sh_seps2 decides; the
+// check rides sh_frames' existing walk and adds no second pass over the body.
+//
+// Refusing it HERE and not only at index time is the whole point. rt_dindex_rec
+// drops it too, because a store can be written by build/wp-slice with no shim
+// in the path -- but a drop at rebuild alone would leave ADMIT answering
+// `ok admitted=N` for a record no query returns, which is exactly the
+// admitted-and-invisible shape this intent exists to remove. Two doors, one
+// rule.
+//
+// ── AN EMPTY BATCH IS REFUSED, NOT SPAWNED (W4) ─────────────────────────────
+// A count of zero with an empty body is SELF-CONSISTENT — the body really does
+// hold zero records — so the count check below passes it, and it used to be
+// handed to the writer as a batch of nothing. The writer sizes its staging
+// buffer from the input file and dies on mem_reserve_raw(0) ("capacity must be
+// > 0, got 0"), respawns the entry in place, dies again, and never exits. This
+// fn is inside proc_run waiting for that child, and this process has ONE accept
+// loop, so the shim then answers nobody, forever, with the port still open and
+// the process still alive: a supervisor sees health. Two bytes of body from any
+// client denied service to every reader and writer until a restart.
+//
+// The refusal is here rather than in the writer because that is where the fact
+// lives: "this batch has no records" is a property of the CALL, and refusing a
+// malformed call is the same job sh_frames and the UTF-8 guard already do. The
+// writer's own fragility on a zero-length input is real and is NOT fixed by
+// this — it is reported, not patched, because the write path is not this
+// intent's to touch. Nothing else can reach it: an empty batch is the only way
+// to hand the writer an empty file, and it stops here now.
+//
+// It is deliberately a SEPARATE gate from the count check, not a widening of
+// it. Folding "empty" into "count disagrees with body" would answer an empty
+// batch with "count=0 body holds 0 records", which reads as a contradiction and
+// tells the client nothing about what it did wrong.
+//
+// ── THE COUNT IS CHECKED AGAINST THE BODY, NOT TRUSTED ──────────────────────
+// The body is self-delimiting, so how many records it holds is a fact about the
+// bytes. sh_frames counts them and a disagreement is refused before the writer
+// is spawned. Without this, a count one too LOW was silent data loss reported
+// as success — the writer read two records out of a three-record body, wrote
+// two, exited 0, and nothing was malformed for a reader to catch. See
+// sh_frames.m1 for why counting is transport's job and not the store's.
+//
+// ── THE REPLY CARRIES THE BLOCK-ID RANGE (AXVERITY_W2_ADMIT_HANDLE_V1, G2) ──
+// §4.5's two-phase write had nothing to read back: ADMIT returned a record
+// count and a byte count, so a consumer needing one record to reference another
+// had no assigned identity to reference. It does now, and it is PER STREAM,
+// because that is what exists — the Lead Architect's ruling (a), 2026-08-26,
+// amended a hard limit that had been written from a false "global, dense from
+// 0" and pointed it at what §2.1 publishes instead.
+//
+// RELAYED, NEVER DERIVED. The spine rule is that only the block-id allocator
+// mints ids and av_admit does not derive them. This fn does not scan a
+// directory, does not subtract a before from an after, and does not read the
+// store's layout: it reads four integers out of a file the ALLOCATOR wrote
+// (lib/wp_publish_ids.m1, called from the flusher after both streams are
+// sealed) and splices them into the reply. Truncated before the spawn, exactly
+// like writer.err, so a stale range cannot be attached to a later admission.
+//
+// THE STRUCTURAL CHECK IS NOT `is the file non-empty`. A truncated or garbage
+// file parses to zeros through str_to_int (arith.rs:142 returns 0 for anything
+// unparseable), and 0 is a real block id in every store — the same trap
+// wp_publish_ids guards on the writer's side. So the check is that the line
+// really carries FOUR space-separated fields: the fourth is extracted with
+// str_after, which returns "" when its delimiter is absent (str_ops.rs:143),
+// so a short line yields an empty fourth field and fails.
+//
+// WHEN THE RANGE IS UNKNOWN THE REPLY SAYS SO AND STAYS status 0. The write
+// happened — that is a fact and status 0 is the only code that carries it;
+// 1, 2 and 3 all tell a client its write did not land, and a client that
+// retries on any of them duplicates durable records. So the status is 0 and the
+// range keys are ABSENT, replaced by `range=unavailable`. A consumer scanning
+// for `structure=` finds nothing and fails loudly, rather than parsing a
+// plausible zero. This branch should be unreachable once the writer publishes
+// on every successful exit; it is one comparison, not infrastructure.
+//
+// ── THE REFUSAL NOW NAMES THE LIMIT (AXVERITY_W2_ADMIT_HANDLE_V1, G3) ───────
+// A batch refused for an oversize record used to be answered with "the writer
+// rejected this batch" and nothing else. The number that would let a consumer
+// fix it -- max_record -- was printed by the writer to ITS OWN stdout, which
+// this process does not capture and does not forward, so §4.1's "ask the
+// operator" was the only way to learn a limit the server already knew. A
+// refusal that withholds the reason it refused is the benign-looking end of
+// UNKNOWN_MUST_NOT_LOOK_BENIGN seen from the client's side: the status is
+// honest, the body is uninformative, and the consumer's only recourse is
+// out-of-band.
+//
+// The writer now also writes that one line to .axverity-store/writer.err
+// (src/hot_mem_write.m1) and this fn relays it verbatim. Relaying, not
+// deriving: the limit is the writer's fact and the transport does not read
+// config, re-decide policy, or reformat the number. The file is TRUNCATED here
+// before the spawn, so a stale line from an earlier admission can never be
+// attached to a later refusal -- an empty file after a refusal means the writer
+// refused for a reason it did not name, and the reply says exactly that rather
+// than inventing one.
+//
+// ── THE TEMP FILE IS ONE FIXED PATH, DELIBERATELY ───────────────────────────
+// It was admit-<seq>.tmp, one per admission, which leaked a file per ADMIT for
+// the life of the process. The bridge has no file-removal primitive and adding
+// one would be a THIRD primitive, which this intent forbids outright — so the
+// path is fixed instead and each admission overwrites the last. The leak is now
+// exactly one file, bounded, named, and in nobody's directory fold: the
+// writer's max+1 scan reads .axverity-store/structure and .axverity-store/
+// payload (wp_bid_resolve.m1:27-28) and the rebuild reads structure alone
+// (rt_rebuild.m1), so a file at the store root is invisible to both tiers.
+// It is written only AFTER the framing check passes, so a refused batch stages
+// nothing.
+//
+// ── THE RETURN VALUE IS ADVISORY AND IS DISCARDED ───────────────────────────
+// The answer to the client is the sh_reply below; this fn's Int return is not
+// it. `rc` is proc_run's raw result, and it is AMBIGUOUS on purpose-free
+// grounds: a refused batch never spawns anything and so returns 0, which is
+// also what a writer that succeeded returns. sh_serve_step binds it to `_a`
+// and never reads it (verified in generated_sh_serve_step_xb.rs: node_51 is
+// bound and has no second reference), and there is exactly one caller.
+//
+// Do NOT start using it without giving it an unambiguous encoding first. It is
+// left as-is rather than rebuilt into a status code because adding control flow
+// to a working fn for a value nobody reads is how defects get in.
+//
+// ── RESULT -> WIRE STATUS (§5.8, now four classes) ──────────────────────────
+// proc_run reports four disjoint bands and this fn, not the bridge, decides
+// what they mean:
+//
+//   rc = 0        the writer ran and finished          -> 0  ok
+//   rc > 0        the writer ran and REJECTED the batch (e.g. a record too
+//                 large for an empty block, hot_mem_write.m1's proc_exit(1))
+//                 -> 1  out-of-contract: retrying these bytes will not help,
+//                 which is §5.8's own test applied honestly
+//   -1..-64       killed by a signal                   -> 2  transient
+//   -256          the writer could not be started      -> 3  server fault
+//   -257          ended, no reason given by the OS     -> 3  server fault
+//
+// The last class is new. Two classes could not carry three facts: "the writer
+// binary is missing" is not out-of-contract (the client's bytes were fine) and
+// is not transient (retrying will not help), and a client routing on status
+// alone would have retried it forever. A distinguishing PREFIX was not enough —
+// the class is what clients route on.
+fn sh_admit(sptr: Int, hdrw: Int, plen: Int) -> Int {
+  let conn = mem_read_int_raw(sptr, Int(8))
+  let buf  = mem_read_int_raw(sptr, Int(16))
+
+  // The count varint sits immediately after the opcode byte.
+  let coff = int_add(hdrw, Int(1))
+  let peek = mem_read_raw(buf, coff, Int(5))
+  let cw   = sh_vi_width(peek, Int(0))
+  let cnt  = if int_gt(cw, Int(0)) { sh_vi_val(peek, Int(0), cw) } else { int_sub(Int(0), Int(1)) }
+
+  let roff = int_add(coff, cw)
+  let rlen = int_sub(int_sub(plen, Int(1)), cw)
+  let vok  = bool_and(int_gt(cw, Int(0)), int_gte(rlen, Int(0)))
+
+  // How many records the body ACTUALLY holds. -1 if it is not cleanly framed.
+  let nfr  = if vok { sh_frames(sptr, roff, rlen) } else { int_sub(Int(0), Int(1)) }
+  let fok  = bool_and(vok, int_gte(nfr, Int(0)))
+  let cok  = bool_and(fok, int_eq(nfr, cnt))
+  // sh_frames leaves the 1-based ordinal of the first non-triple in slot 152,
+  // or 0 if every record carries exactly two separators.
+  let sfa  = if fok { mem_read_int_raw(sptr, Int(152)) } else { Int(0) }
+  let sok  = bool_and(cok, int_eq(sfa, Int(0)))
+  // ...and a batch of triples that agrees with its body still has to HAVE one.
+  let bat  = bool_and(sok, int_gt(cnt, Int(0)))
+
+  let path = Text(".axverity-store/admit.tmp")
+  let wep  = Text(".axverity-store/writer.err")
+  let idp  = Text(".axverity-store/admit.ids")
+  let _mk  = fs_mkdir_p(Text(".axverity-store"))
+  let _wr  = if bat { fs_write_bytes(path, mem_read_raw(buf, roff, rlen)) }
+             else   { io_print(Text("")) }
+  // Truncated BEFORE the spawn so nothing an earlier admission said can be
+  // attached to this one's refusal.
+  let _we  = if bat { fs_write_text(wep, Text("")) }
+             else   { io_print(Text("")) }
+  let _wi  = if bat { fs_write_text(idp, Text("")) }
+             else   { io_print(Text("")) }
+
+  // argv[3] is the writer; the default is only reached if bin/axshim was
+  // bypassed, and it is relative on purpose so that case fails loudly at the
+  // store root rather than silently running some other repo's binary.
+  let wexe = argv_or(Int(3), Text("build/wp-slice"))
+  let rc   = if bat { proc_run(wexe, list_of_2(path, int_to_str(cnt))) }
+             else   { Int(0) }
+
+  let good = bool_and(bat, int_eq(rc, Int(0)))
+  let fail = bool_and(bat, int_gt(rc, Int(0)))
+  let kill = bool_and(bat, bool_and(int_lt(rc, Int(0)), int_gt(rc, int_sub(Int(0), Int(65)))))
+  let srvf = bool_and(bat, int_lte(rc, int_sub(Int(0), Int(256))))
+  let nost = int_eq(rc, int_sub(Int(0), Int(256)))
+
+  // The writer's own words, or "" if it named no reason. fs_read_text panics on
+  // a missing file (io.rs:55), so the existence check is not optional.
+  let werr = if fs_file_exists(wep) { fs_read_text(wep) } else { Text("") }
+  let hase = int_gt(str_len(werr), Int(0))
+
+  // The allocator's four integers: structure_first, structure_count,
+  // payload_first, payload_count. A count of 0 carries first = -1, never 0.
+  let sp   = chr(Int(32))
+  let idt  = if fs_file_exists(idp) { fs_read_text(idp) } else { Text("") }
+  let sf   = str_before(idt, sp)
+  let ir0  = str_after(idt, sp)
+  let sc   = str_before(ir0, sp)
+  let ir1  = str_after(ir0, sp)
+  let pf   = str_before(ir1, sp)
+  let pc   = str_after(ir1, sp)
+  let hasi = int_gt(str_len(pc), Int(0))
+
+  // AXVERITY_W2_ADMIT_HANDLE_V1 G3, corrected at G5 — an admission makes the
+  // RAM projection stale, and the condition is `bat`: A SPAWN WAS ATTEMPTED.
+  //
+  // IT WAS `good`, AND THAT MISSED THE CRASH. The reasoning behind `good` was
+  // "a refused batch wrote nothing and staled nothing", which is true of every
+  // MALFORMED refusal — those are decided above, before the writer exists — and
+  // FALSE of the two refusals that come back from a writer that already ran.
+  // §A.4 makes status 2 and 3 reachable only when the writer is killed by a
+  // signal or cannot be started, and a signal lands wherever it lands: a killed
+  // writer leaves a structurally intact PREFIX, which is durable data the
+  // projection has not seen. Measured before the fix, small population, real
+  // SIGKILL mid-batch: 27 durable blocks appeared and the next QUERY answered
+  // status 0 with the 1 row it held from before the batch. That is the exact
+  // shape T2 exists to remove, reached through the one door nobody checked, in
+  // the one case where being wrong costs most.
+  //
+  // `bat` is deliberately WIDER than "the store changed". A writer that could
+  // not be started (status 3) staled nothing, and this marks the projection
+  // stale anyway. The cost is one spurious REBUILD; the alternative is
+  // enumerating which failures did and did not reach disk from an exit code,
+  // which is a guess this process is not in a position to make. Erring toward
+  // "I do not know, so I will not answer" is the whole of
+  // UNKNOWN_MUST_NOT_LOOK_BENIGN.
+  let _fr = if bat { mem_write_int_raw(sptr, Int(160), Int(1)) }
+            else   { io_print(Text("")) }
+
+  let _r0 = if bool_not(vok) {
+              sh_reply(conn, Int(1), Text("MALFORMED admit body: count varint did not decode"))
+            } else { io_print(Text("")) }
+
+  let _r1 = if bool_and(vok, bool_not(fok)) {
+              sh_reply(conn, Int(1),
+                Text("MALFORMED admit body is not a framed record stream"))
+            } else { io_print(Text("")) }
+
+  let _r2 = if bool_and(fok, bool_not(cok)) {
+              sh_reply(conn, Int(1),
+                str_concat(Text("MALFORMED count="),
+                  str_concat(int_to_str(cnt),
+                    str_concat(Text(" body holds "),
+                      str_concat(int_to_str(nfr), Text(" records"))))))
+            } else { io_print(Text("")) }
+
+  let _rs = if bool_and(cok, bool_not(sok)) {
+              sh_reply(conn, Int(1),
+                str_concat(Text("MALFORMED record "),
+                  str_concat(int_to_str(sfa),
+                    Text(" is not a triple: a record must carry exactly two 0x1f separators and be valid UTF-8"))))
+            } else { io_print(Text("")) }
+
+  let _re = if bool_and(sok, bool_not(bat)) {
+              sh_reply(conn, Int(1),
+                Text("MALFORMED admit batch is empty: count=0 carries no records to write"))
+            } else { io_print(Text("")) }
+
+  let head = str_concat(Text("ok admitted="),
+               str_concat(int_to_str(cnt),
+                 str_concat(Text(" bytes="), int_to_str(rlen))))
+
+  let _r3 = if bool_and(good, hasi) {
+              sh_reply(conn, Int(0),
+                str_concat(head,
+                  str_concat(Text(" structure="),
+                    str_concat(sf, str_concat(Text(","),
+                      str_concat(sc, str_concat(Text(" payload="),
+                        str_concat(pf, str_concat(Text(","), pc)))))))))
+            } else { io_print(Text("")) }
+
+  let _r8 = if bool_and(good, bool_not(hasi)) {
+              sh_reply(conn, Int(0), str_concat(head, Text(" range=unavailable")))
+            } else { io_print(Text("")) }
+
+  let _r4 = if bool_and(fail, hase) {
+              sh_reply(conn, Int(1),
+                str_concat(Text("WRITER exit="),
+                  str_concat(int_to_str(rc),
+                    str_concat(Text(" the writer rejected this batch; retrying the same bytes will not help: "),
+                      werr))))
+            } else { io_print(Text("")) }
+
+  let _r7 = if bool_and(fail, bool_not(hase)) {
+              sh_reply(conn, Int(1),
+                str_concat(Text("WRITER exit="),
+                  str_concat(int_to_str(rc),
+                    Text(" the writer rejected this batch and named no reason; retrying the same bytes will not help"))))
+            } else { io_print(Text("")) }
+
+  let _r5 = if kill {
+              sh_reply(conn, Int(2),
+                str_concat(Text("WRITER killed by signal "),
+                  int_to_str(int_sub(Int(0), rc))))
+            } else { io_print(Text("")) }
+
+  let _r6 = if srvf {
+              if nost {
+                sh_reply(conn, Int(3), str_concat(Text("NOWRITER could not start "), wexe))
+              } else {
+                sh_reply(conn, Int(3),
+                  Text("NOWRITER the writer ended and the OS named no exit code and no signal"))
+              }
+            } else { io_print(Text("")) }
+
+  int_add(rc, Int(0))
+}

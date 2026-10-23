@@ -1,0 +1,46 @@
+// wp_ack_bench_step — ack_bench's per-block benchmark iteration. Reads
+// the durable-watermark cell handle via the same take+put-back self-
+// mailbox idiom wp_flusher_step and wp_mem_controller_step already use
+// for constant-across-iterations context (wp-ackbench-cell), times a
+// single wp_wait_durable(cell, seq) call end to end with now_unix_nanos,
+// and appends one CSV line — "seq,elapsed_ns\n" — to
+// .axverity-store/ack-bench.csv (inside the single store folder per
+// CLAUDE.md §0, even though this is benchmark telemetry rather than
+// store content, so nothing this run creates lives outside it). Text("\n")
+// does not decode to a newline at runtime (CLAUDE.md §2 lexer gotcha) —
+// chr(Int(10)) is used instead.
+// AXVERITY_EXTENT_WRITE_PATH step 5a: state is "<seq> FS <final>", where final
+// is the last durable seq once the flusher has published it and -1 while the
+// run is still going. ack_bench cannot be bound by a sentinel on a channel the
+// way the other stages are, because it does not CONSUME the pipeline — it
+// races ahead of it, waiting on the watermark. So it learns the end from
+// wp-ack-final-cell, and the guard below is what stops it RECORDING a seq
+// that will never become durable. The final is re-read AFTER the wait, not
+// only before it: the wait is precisely the window in which the run ends.
+fn wp_ack_bench_step(state: Text) -> Text {
+  let fs    = chr(Int(28))
+  let seq   = str_to_int(str_before(state, fs))
+  let acell = str_to_int(str_after(state, fs))
+
+  let cell = bchan_take(Text("wp-ackbench-cell"))
+  let _put = bchan_send(Text("wp-ackbench-cell"), cell)
+
+  let t0 = now_unix_nanos(Unit())
+  let _w = wp_wait_durable(cell, seq)
+  let t1 = now_unix_nanos(Unit())
+
+  // Re-read the final AFTER the wait. If the run ended while this was parked,
+  // the wait returned because the flusher bumped the watermark, not because
+  // `seq` became durable — recording it would put a fictional row in the
+  // benchmark.
+  let final = cell_load_raw(acell)
+  let _rec  = if int_lte(seq, final) {
+                let nl   = chr(Int(10))
+                let line = str_concat(int_to_str(seq),
+                             str_concat(Text(","), str_concat(int_to_str(int_sub(t1, t0)), nl)))
+                fs_append_text(Text(".axverity-store/ack-bench.csv"), line)
+              } else {
+                io_print(Text(""))
+              }
+  str_concat(int_to_str(int_add(seq, Int(1))), str_concat(fs, int_to_str(acell)))
+}

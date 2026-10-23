@@ -1,0 +1,6 @@
+// rt_nidx_distinct — number of distinct names known, i.e. live bucket heads.
+// Differs from rt_nidx_count exactly by the number of supersessions.
+fn rt_nidx_distinct(u: Unit) -> Int {
+  let c = map_len(Text("rt:nidx:head"))
+  int_add(c, Int(0))
+}

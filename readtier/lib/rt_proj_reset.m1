@@ -1,0 +1,20 @@
+// rt_proj_reset — drop all three projections and the result set. Used by the
+// test driver between cases, by the benchmark between populations, and by the
+// cold rebuild before it repopulates.
+//
+// u32v_new rather than a clear: it drops the buffer instead of retaining the
+// capacity, so a rebuilt array's reallocation count is a function of its own
+// pushes and not of whatever this process did before (u32v.rs's own reason).
+//
+// sealed=0 travels with the u32v_new. rt_seal's dirty test is len != sealed,
+// and leaving a stale sealed behind would either sort an empty array or, worse,
+// skip the sort after the first n pushes happened to land back on the old
+// length.
+fn rt_proj_reset(u: Unit) -> Unit {
+  let _a = u32v_new(Text("rt:A"))
+  let _b = u32v_new(Text("rt:B"))
+  let _c = u32v_new(Text("rt:C"))
+  let _s = map_put(Text("rt:proj"), Text("sealed"), Text("0"))
+  let _o = rt_out_reset(Unit())
+  Unit()
+}

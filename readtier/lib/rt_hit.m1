@@ -1,0 +1,49 @@
+// rt_hit — the end of a FULLY BOUND range, without a second binary search.
+//
+// A range is normally [lb(q), lb(q')), two searches. At nk=3 the second one is
+// avoidable: q' is q with its last component incremented, so the range can hold
+// at most the records equal to q, and they begin at `st` if they exist at all.
+// One equality test against record `st` answers it — three u32v_get instead of
+// log2(n) probes, on the pattern that regressed worst.
+//
+// Returns st+1 on a hit and st on a miss, which is exactly what the caller
+// would have got from the second search: an empty range when q is absent, and a
+// range the scan will emit once when it is present.
+//
+// ONE RECORD IS ENOUGH EVEN WHEN THE TRIPLE WAS INDEXED TWICE. The projections
+// are APPEND_ONLY, so a re-indexed triple occupies consecutive records here, and
+// stopping at st+1 returns the first of them. The answer to a fully-bound
+// pattern is a set of at most one triple, and rt_out_emit would have collapsed
+// the duplicates anyway — this just declines to walk them.
+//
+// THE BOUNDS GUARD IS NOT DEFENSIVE DECORATION. u32v_get is STRICT and panics
+// on an out-of-range index (u32v.rs), and `st` is a lower bound, so it equals
+// nrec whenever q sorts past every record — the ordinary "no such triple, and
+// it would sort last" case, not a corrupt one.
+//
+// It is a guard on a REACHABLE input, not insurance against eager evaluation.
+// M1's `if` is lazy — the emitter renders each branch inside a real Rust
+// if/else (axis-codegen-bridge-rs/src/emit/rust_05.rs:1602-1618) — so this fn
+// does not run when rt_range takes another arm. An earlier version of this
+// comment hedged that the guard "also makes this fn safe to evaluate outside
+// the branch that needs it", which quietly treated a verified substrate
+// property as an open question. See the substrate-invariants section of
+// readtier/README.md.
+//
+// The key slots come from scratch (16/24/32) and the query values are passed,
+// NOT read from scratch: rt_range overwrites q0..q2 with the successor key on
+// its way to the second search, and this fn runs before that happens. Reading
+// them back would compare against a key one greater than the one asked for.
+fn rt_hit(store: Int, p: Int, st: Int, nrec: Int, q0: Int, q1: Int, q2: Int) -> Int {
+  let r = if int_lt(st, nrec) {
+            let bse = int_mul(st, Int(3))
+            let a0  = rt_vget(store, int_add(bse, mem_read_int_raw(p, Int(16))))
+            let a1  = rt_vget(store, int_add(bse, mem_read_int_raw(p, Int(24))))
+            let a2  = rt_vget(store, int_add(bse, mem_read_int_raw(p, Int(32))))
+            let eq  = bool_and(int_eq(a0, q0), bool_and(int_eq(a1, q1), int_eq(a2, q2)))
+            if eq { int_add(st, Int(1)) } else { int_add(st, Int(0)) }
+          } else {
+            int_add(st, Int(0))
+          }
+  int_add(r, Int(0))
+}

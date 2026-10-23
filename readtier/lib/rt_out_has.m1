@@ -1,0 +1,63 @@
+// rt_out_has — membership in the result set. This is what the tests assert
+// with: a query is correct when its cardinality matches AND every expected
+// triple is present.
+//
+// PHASE A. It used to be one set_has against a Text-keyed hash set. The set is
+// gone, so this parses the canonical key back into three ids and BINARY
+// SEARCHES the sealed result array — O(log R) probes instead of one hash, on a
+// path that is reached only from the assertion suites and never from a query.
+//
+// THE SIGNATURE IS TEXT AND STAYS TEXT. rt_qt_members and rt_qt_super call it
+// with rt_key3(...) and those files are the acceptance test, which is not
+// editable; changing the argument to three Ints would have meant editing them.
+// So the render/parse round trip lives here, off the hot path, rather than in
+// the callers.
+//
+// THE ROUND-TRIP GUARD IS NOT DECORATION. str_to_int returns 0 for anything it
+// cannot parse (arith.rs:141-143), and str_before returns the WHOLE string when
+// its delimiter is absent (str_ops.rs:128-135), so a malformed key would parse
+// to (0, 0, 0) and report membership of a triple that exists. The old set_has
+// could not do that: it compared bytes. Re-rendering the parsed ids and
+// comparing against the argument restores exactly that property — a key that is
+// not the canonical rendering of three ids answers false, whatever it is.
+//
+// An empty result set needs no special case: u32v_len is permissive and answers
+// 0 for a name that is not there (u32v.rs), the window [0, 0) makes loop_while
+// exit before its first probe, and st == nrec fails the bounds test below — so
+// no u32v_get is ever reached on an array that has none.
+fn rt_out_has(triple: Text) -> Bool {
+  let us   = chr(Int(31))
+  let f0   = str_before(triple, us)
+  let rest = str_after(triple, us)
+  let f1   = str_before(rest, us)
+  let f2   = str_after(rest, us)
+  let q0   = str_to_int(f0)
+  let q1   = str_to_int(f1)
+  let q2   = str_to_int(f2)
+  let ok   = str_eq(rt_key3(int_to_str(q0), int_to_str(q1), int_to_str(q2)), triple)
+  let r    = if ok {
+               let nrec = int_div(u32v_len(Text("rt:out")), Int(3))
+               let res  = mem_reserve_raw(Int(64))
+               let p    = tuple_field(res, Int(0))
+               let _l0  = mem_write_int_raw(p, Int(0),  Int(0))
+               let _h0  = mem_write_int_raw(p, Int(8),  nrec)
+               let _w0  = mem_write_int_raw(p, Int(40), q0)
+               let _w1  = mem_write_int_raw(p, Int(48), q1)
+               let _w2  = mem_write_int_raw(p, Int(56), q2)
+               let st   = rt_lb_o(p)
+               let hit  = if int_lt(st, nrec) {
+                            let bse = int_mul(st, Int(3))
+                            let a0  = u32v_get(Text("rt:out"), bse)
+                            let a1  = u32v_get(Text("rt:out"), int_add(bse, Int(1)))
+                            let a2  = u32v_get(Text("rt:out"), int_add(bse, Int(2)))
+                            bool_and(int_eq(a0, q0), bool_and(int_eq(a1, q1), int_eq(a2, q2)))
+                          } else {
+                            bool_or(Bool(false), Bool(false))
+                          }
+               let _fr  = mem_free_raw(p, Int(64))
+               bool_or(hit, Bool(false))
+             } else {
+               bool_or(Bool(false), Bool(false))
+             }
+  bool_or(r, Bool(false))
+}

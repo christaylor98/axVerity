@@ -1,0 +1,81 @@
+// shim — axVerity's confined TCP transport (AXVERITY_SHIM_BUILD_V1).
+//
+// One process per store, single-threaded, one operation in flight. It links the
+// read tier in-process and reaches nothing below the published surface: the
+// only axVerity fns it names are rt_query, rt_out_count, rt_out_at and
+// rt_rebuild — four calls, all of them §3. Everything else it uses is a bridge
+// primitive (sockets, raw memory, files), the same infrastructure any consumer
+// may use. Nothing in readtier/, lib/, src/, lib_coreir/ or registries/ was
+// touched to make this build; it links against them exactly as shipped.
+//
+//   shim <store-root> <port>
+//
+// CWD IS THE STORE. Both tiers resolve `.axverity-store/...` relative to the
+// process's working directory and neither accepts a path — rt_rebuild takes
+// Unit (rt_rebuild.m1:29) and rt_dblk_path hardcodes the two stream directories
+// (rt_dblk_path.m1:16-17). So the store is selected by where this process
+// stands, which is why there is one process per store and why it never moves.
+// The shim CANNOT chdir itself: the bridge has no such primitive. bin/axshim
+// does the cd and execs this binary; argv[1] is carried so the process can say
+// which store it believes it is serving, and is not otherwise used.
+//
+// This contradicts consumer obligation §7.2 ("Supply the store path. Never
+// assume CWD-relative resolution"). The obligation is not satisfiable against
+// the tiers as they stand; §10 item 3 predicted CWD-relative resolution and it
+// is correct.
+fn shim_main(argv: TextList) -> Unit {
+  let root = argv_or(Int(1), Text("."))
+  let ptxt = argv_or(Int(2), Text("7717"))
+  let port = str_to_int(ptxt)
+
+  // One fixed frame buffer for the life of the process. Nothing about a frame
+  // is allowed to allocate: a length prefix that could size an allocation is a
+  // remote allocation primitive, so the cap is set here and a frame past it is
+  // refused (sh_recv_step).
+  let cap  = Int(8388608)
+  let sres = mem_reserve_raw(Int(256))
+  let sptr = tuple_field(sres, Int(0))
+  let bres = mem_reserve_raw(int_add(cap, Int(64)))
+  let buf  = tuple_field(bres, Int(0))
+
+  let lt    = tcp_listen(port)
+  let lis   = tuple_field(lt, Int(0))
+  let bound = tuple_field(lt, Int(1))
+
+  let _s0 = mem_write_int_raw(sptr, Int(0),   lis)
+  let _s1 = mem_write_int_raw(sptr, Int(8),   Int(0))
+  let _s2 = mem_write_int_raw(sptr, Int(16),  buf)
+  let _s3 = mem_write_int_raw(sptr, Int(24),  cap)
+  let _s5 = mem_write_int_raw(sptr, Int(112), Int(0))
+
+  // AXVERITY_W2_ADMIT_HANDLE_V1 G3 — the projection's freshness, slot 160.
+  // 1 = the RAM tier does not reflect the durable store. It STARTS stale, and
+  // that is the load-bearing half: a shim restarted against a store somebody
+  // else already wrote holds an empty projection, and every query against it
+  // would otherwise answer `ok` with 0 rows. Only a successful REBUILD clears
+  // it (sh_rebuild); every successful ADMIT sets it again (sh_admit).
+  let _s6 = mem_write_int_raw(sptr, Int(160), Int(1))
+
+  let _m = fs_mkdir_p(Text(".axverity-store"))
+  let _b = io_println(str_concat(Text("axshim listening port="),
+             str_concat(int_to_str(bound),
+               str_concat(Text(" store="),
+                 str_concat(root,
+                   str_concat(Text(" writer="), argv_or(Int(3), Text("build/wp-slice"))))))))
+
+  // AXVERITY_SHIM_CONCURRENT_CONNS_V1 (2026-10-19): connections are accepted and carried by 16
+  // connection threads (sh_acceptor); this thread owns the projection and answers every request, one
+  // at a time (sh_index_step). Until this the one thread served one connection to exhaustion, so a
+  // client that kept its connection open shut out every other client.
+  let rcap = Int(67108864)
+  let rrec = tuple_field(mem_reserve_raw(Int(64)), Int(0))
+  let rdat = tuple_field(mem_reserve_raw(int_add(rcap, Int(64))), Int(0))
+  let _r0 = mem_write_int_raw(rrec, Int(0),  rdat)
+  let _r1 = mem_write_int_raw(rrec, Int(8),  Int(0))
+  let _r2 = mem_write_int_raw(rrec, Int(16), rcap)
+  let _r3 = mem_write_int_raw(rrec, Int(24), Int(0))
+  let _rm = map_put(Text("sh"), Text("rb"), int_to_str(rrec))
+  let _sp = sh_spawn_acceptors(lis)
+  let _l = loop_while(sptr, sh_always, sh_index_step, Int(1000000000000))
+  Unit()
+}

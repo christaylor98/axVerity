@@ -1,0 +1,21 @@
+// wp_bid_scan_step — B1's fold body, reached through foreach so the directory
+// listing is never NAMED inside the loop body.
+//
+// This is the FOREACH_ONLY rule at its one load-bearing site in the write
+// path. Every M1 expression that names a list emits a clone at the call site,
+// and Value::List is a plain Vec with no structural sharing, so folding by
+// index and peeking the list out of a channel is O(N^2): 369 s versus 252 ms
+// at 100k entries. foreach moves the elements and never names the list, so
+// this is linear — measured at 195 ms for a 100k-block store.
+//
+// The running maximum lives in a cell whose handle arrives by a
+// take-and-put-back self-mailbox, the same idiom wp-mc-active and
+// wp-durable-cell already use: one Int over a bounded channel, no list.
+fn wp_bid_scan_step(name: Text) -> Int {
+  let mc  = bchan_take(Text("wp-bid-maxcell"))
+  let _m  = bchan_send(Text("wp-bid-maxcell"), mc)
+  let s   = wp_bid_parse(name)
+  let cur = cell_load_raw(mc)
+  let _u  = if int_lt(cur, s) { cell_cas_raw(mc, cur, s) } else { Int(0) }
+  int_add(s, Int(0))
+}

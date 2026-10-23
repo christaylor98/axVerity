@@ -1,0 +1,35 @@
+// rt_populate — build the synthetic graph at population n and report what it
+// cost. Two numbers, separated on purpose:
+//
+//   insert_*  the APPEND half — 3 name resolves and 9 u32v_push per triple.
+//   seal_ms   the SEAL half — three u32v_sort3 over the whole array, once.
+//
+// build_total_ms is the sum and is the number to read against the trie's
+// insert_total_ms, because the trie had no seal: it paid its ordering cost
+// per-insert, in the hash keys. Reporting only the append half would flatter
+// this rewrite by hiding the work it moved rather than removed.
+//
+// foreach over range(0, n), unchanged from the trie version — deliberately,
+// so the ingest loop driver is identical on both sides of the measurement.
+// The list is consumed by move and never named in the body, so this is linear;
+// the same sweep written as loop_count over an index while peeking the input
+// list out of a channel would be O(n^2).
+fn rt_populate(n: Int) -> Int {
+  let _n = map_put(Text("rt:bench"), Text("n"), int_to_str(n))
+  let t0 = now_unix_nanos(Unit())
+  let _f = foreach(range(Int(0), n), rt_pop_step)
+  let t1 = now_unix_nanos(Unit())
+  let _s = rt_seal(Unit())
+  let t2 = now_unix_nanos(Unit())
+  let _a = io_println(str_concat(Text("insert_ns_per_triple="),
+             int_to_str(int_div(int_sub(t1, t0), int_max(n, Int(1))))))
+  let _b = io_println(str_concat(Text("insert_total_ms="),
+             int_to_str(int_div(int_sub(t1, t0), Int(1000000)))))
+  let _c = io_println(str_concat(Text("seal_ms="),
+             int_to_str(int_div(int_sub(t2, t1), Int(1000000)))))
+  let _d = io_println(str_concat(Text("seal_ns_per_triple="),
+             int_to_str(int_div(int_sub(t2, t1), int_max(n, Int(1))))))
+  let _e = io_println(str_concat(Text("build_total_ms="),
+             int_to_str(int_div(int_sub(t2, t0), Int(1000000)))))
+  int_add(Int(0), Int(0))
+}

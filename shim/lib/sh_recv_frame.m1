@@ -1,0 +1,28 @@
+// sh_recv_frame — read exactly one frame from `conn` into the scratch buffer.
+//
+// Returns the PAYLOAD length (>= 0) when a whole frame arrived, -1 when the
+// peer closed cleanly before one did, and -2 when the declared length does not
+// fit the fixed frame buffer. The payload itself stays in raw memory at
+// buf + hdrw; the caller slices what it needs with mem_read_raw, which is what
+// keeps a multi-megabyte ADMIT body out of any M1 value.
+//
+// Every per-frame field is reset here rather than after use, so a connection
+// that died mid-frame cannot leak a partial length into the next one.
+fn sh_recv_frame(conn: Int, sptr: Int) -> Int {
+  let _c = mem_write_int_raw(sptr, Int(8),  conn)
+  let _a = mem_write_int_raw(sptr, Int(32), Int(0))
+  let _b = mem_write_int_raw(sptr, Int(40), Int(0))
+  let _d = mem_write_int_raw(sptr, Int(48), int_sub(Int(0), Int(1)))
+  let _e = mem_write_int_raw(sptr, Int(56), Int(0))
+  let _f = mem_write_int_raw(sptr, Int(64), int_sub(Int(0), Int(1)))
+
+  let _l = loop_while(sptr, sh_recv_more, sh_recv_step, Int(1000000000))
+
+  let filled = mem_read_int_raw(sptr, Int(32))
+  let total  = mem_read_int_raw(sptr, Int(64))
+  let plen   = mem_read_int_raw(sptr, Int(48))
+  let whole  = bool_and(int_gt(total, int_sub(Int(0), Int(1))), int_gte(filled, total))
+  let r = if int_eq(plen, int_sub(Int(0), Int(2))) { int_sub(Int(0), Int(2)) }
+          else { if whole { int_add(plen, Int(0)) } else { int_sub(Int(0), Int(1)) } }
+  int_add(r, Int(0))
+}

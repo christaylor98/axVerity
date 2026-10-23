@@ -1,0 +1,97 @@
+// rt_dindex_rec — index ONE decoded durable record into the RAM tier.
+//
+// This is the join between the durable format and the read tier that already
+// existed. It materializes just this record's bytes (mem_read_raw over its own
+// offset and length — a copy of ~15 bytes, not of the block), parses the
+// structure record's three fields, and feeds them to rt_insert_names, which is
+// the read tier's own ingestion surface, unchanged. The projections and the
+// internal name-index do not know they are being fed from disk.
+//
+// A structure record is `s<US>v<US>t` with US = 0x1F, the shape the corpus
+// generator emits and the same one rt_pop_step builds in RAM. A record that is
+// not valid UTF-8, or that does not carry two separators, is counted as
+// malformed and skipped rather than indexed. Both tests are stated below at
+// the site that needs them; neither is a judgement about what a name may
+// contain, which is the consumer's business and not this tier's.
+//
+// It now sees BOTH durable streams, not the structure stream alone, so it also
+// sees records this fn was written on the assumption it would never meet: a
+// payload blob is arbitrary bytes and a name may be empty. Neither is an error
+// in the store.
+//
+// The RID is recorded for all three names, not just the subject. A verb or a
+// target is a name that exists in the store, and asking "where is this name
+// durable" should answer for any of them. rt_rid_put keeps the minimum, so the
+// answer does not depend on which block the filesystem listed first.
+fn rt_dindex_rec(sptr: Int) -> Int {
+  let bptr   = mem_read_int_raw(sptr, Int(0))
+  let recoff = mem_read_int_raw(sptr, Int(56))
+  let reclen = mem_read_int_raw(sptr, Int(64))
+  let blkid  = mem_read_int_raw(sptr, Int(24))
+  // AXVERITY_EXTENT_WRITE_PATH step 5b — rid = (seq*2 + stream)*stride + off,
+  // where off is the record's VARINT START and stride is the block capacity in
+  // bytes. The stream is in the locator because a block id alone stops being
+  // unique once slablock mints per-handle sequences, and because without it a
+  // reader spends ~3.5 us probing directories to find a record it then reads
+  // in 676 ns.
+  let stream = mem_read_int_raw(sptr, Int(112))
+  let roff   = mem_read_int_raw(sptr, Int(120))
+  let stride = mem_read_int_raw(sptr, Int(128))
+  let rid    = int_add(int_mul(int_add(int_mul(blkid, Int(2)), stream), stride), roff)
+
+  // UTF-8 IS CHECKED BEFORE IT IS ASSUMED (AXVERITY_SILENT_LOSS_FIX_V1).
+  // bytes_to_text panics on invalid UTF-8 (bytes_io.rs:217) and ADMIT's body is
+  // the one body the shim never validates -- sh_serve_step.m1:59 excludes op 3
+  // from the UTF-8 guard on purpose, because a record stream is not text. While
+  // the rebuild read the structure stream alone that was unreachable: a blob
+  // never reached this fn. The union scan reaches it, so a single 0xFF admitted
+  // over the wire would panic the entry, respawn it to the pool budget and wedge
+  // the process. It is a malformed record now, counted like any other.
+  let raw  = mem_read_raw(bptr, recoff, reclen)
+  let utf  = bytes_is_utf8(raw)
+  let txt  = if utf { bytes_to_text(raw) } else { Text("") }
+  let us   = chr(Int(31))
+  let s    = str_before(txt, us)
+  let rest = str_after(txt, us)
+  let v    = str_before(rest, us)
+  let t    = str_after(rest, us)
+
+  // MALFORMED IS ABOUT SEPARATORS, NOT ABOUT EMPTINESS.
+  // This used to require all three fields non-empty, which made an empty name
+  // silently unqueryable -- the wire harness's W2, and a triple a consumer
+  // emits the first time a field is blank. Section 1 of the contract says
+  // axVerity has no opinion about what the three positions mean, so an empty
+  // name is a legal name and is stored (decided 2026-08-20).
+  //
+  // The non-empty test was carrying a second job: str_before returns the WHOLE
+  // string when the delimiter is absent (str_ops.rs:128-135), so a record with
+  // too few separators decodes to a triple with a blank tail rather than to
+  // nothing. Dropping the emptiness test without replacing it would have
+  // indexed "a<US>b" as (a, b, "") -- a malformed record silently promoted to a
+  // legal one. The separator count is the test that was actually meant: two
+  // separators make a triple, and where they fall is the record's business.
+  //
+  // EXACTLY two, not two or more (P9). A third separator is not a target that
+  // contains 0x1F -- the format has no escaping, so those bytes are not a
+  // triple under any reading. Indexed, it returns over the wire as a FOUR-field
+  // row and breaks the client's row parser, which is the corruption Appendix
+  // A.5 tells a consumer cannot reach it. The shim refuses such a record at
+  // ADMIT (sh_seps2); this is the same rule at the other door, for a store
+  // written by build/wp-slice with no shim in the path.
+  let sep1 = int_gte(str_index_of(txt,  us), Int(0))
+  let sep2 = int_gte(str_index_of(rest, us), Int(0))
+  let sep3 = int_lt(str_index_of(t,     us), Int(0))
+  let ok   = bool_and(utf, bool_and(sep1, bool_and(sep2, sep3)))
+  let _i = if ok {
+             let _n  = rt_insert_names(s, v, t)
+             let _r1 = rt_rid_put(s, rid)
+             let _r2 = rt_rid_put(v, rid)
+             let _r3 = rt_rid_put(t, rid)
+             int_add(Int(1), Int(0))
+           } else {
+             let nb = mem_read_int_raw(sptr, Int(96))
+             let _b = mem_write_int_raw(sptr, Int(96), int_add(nb, Int(1)))
+             int_add(Int(0), Int(0))
+           }
+  int_add(_i, Int(0))
+}

@@ -1,0 +1,49 @@
+// NESTED_IF_WORKAROUND (FORCED): has its own `if`s.
+// rt_span_count — pass one of reassembly: walk the chain and total its bytes
+// WITHOUT staging any block, so the buffer can be allocated at the right size.
+// M1 has no realloc and the reader cannot know a spanning record's length in
+// advance — nothing stores it, by design, because a derived total is what keeps
+// the three-byte prefix sufficient. Two passes is the price, paid only by
+// spanning records.
+//
+// A full fragment block is exactly the block capacity by construction, so this
+// pass needs only each block's FOOTER and never its payload. The capacity is
+// the stride, already resolved once per block by rt_dblk_scan — so the count
+// costs one 8-byte read per block in the chain rather than a whole block.
+// rt_span_footer is what makes that true; read its header before changing it.
+//
+// THE WALK KEYS ON A BIT, NOT ON A MAGNITUDE. It used to test `flags >= 2`,
+// which read "2 or 3" as "continues", and that is only accidentally the same
+// thing: flags 4 (one complete unframed record in this block) is >= 2 and does
+// NOT continue, and would have been counted as a whole fragment and then
+// chased into the next block. bit1 is the continuation bit and it is tested
+// directly.
+//
+//   bit1 set   flags 2, 3   the whole payload is body, and it continues
+//   bit1 clear flags 1, 4   taillen bytes of body, and the chain ends here
+//
+// Scratch: 112 stream, 128 stride, 152 accumulated bytes, 160 block seq,
+// 168 done flag.
+fn rt_span_count(sptr: Int) -> Int {
+  let stream = mem_read_int_raw(sptr, Int(112))
+  let stride = mem_read_int_raw(sptr, Int(128))
+  let seq    = mem_read_int_raw(sptr, Int(160))
+  let path   = rt_dblk_path(stream, seq)
+  let have   = int_gt(str_len(path), Int(0))
+  let foot   = if have { rt_span_footer(path, stride) } else { int_sub(Int(0), Int(1)) }
+  let norm   = int_eq(foot, int_sub(Int(0), Int(1)))
+  let flags  = if norm { Int(0) } else { int_div(foot, Int(4294967296)) }
+  let tail   = if norm { Int(0) } else { int_mod(foot, Int(4294967296)) }
+  let contin = int_mod(int_div(flags, Int(2)), Int(2))
+  let add    = if int_eq(contin, Int(1)) { int_sub(stride, Int(8)) }
+               else { int_add(tail, Int(0)) }
+  let acc    = mem_read_int_raw(sptr, Int(152))
+  let _a     = mem_write_int_raw(sptr, Int(152), int_add(acc, add))
+  let _s     = mem_write_int_raw(sptr, Int(160), int_add(seq, Int(1)))
+  // Done when this block did not continue: it carried the tail, it WAS the
+  // whole record, or the chain is broken or absent, which a truncated store
+  // can produce.
+  let cont   = bool_and(have, int_eq(contin, Int(1)))
+  let _d     = if cont { io_print(Text("")) } else { mem_write_int_raw(sptr, Int(168), Int(1)) }
+  int_add(sptr, Int(0))
+}

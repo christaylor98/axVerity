@@ -1,0 +1,6 @@
+// sh_accept_more — the accept loop runs until the process is killed. Slot 112
+// exists so a future STOP has somewhere to write; nothing sets it today.
+fn sh_accept_more(sptr: Int) -> Bool {
+  let stop = mem_read_int_raw(sptr, Int(112))
+  int_eq(stop, Int(0))
+}

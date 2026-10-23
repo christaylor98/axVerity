@@ -1,0 +1,7 @@
+// rt_q_sxt — source and target bound, verb free. Prefix {T,S} is rt:C's first
+// two key slots, so the query components go in as (t, s) even though the
+// caller names them the other way round; the records in the range carry the
+// verbs.
+fn rt_q_sxt(s: Text, t: Text) -> Int {
+  rt_range(Int(2), Int(2), rt_nidx_lookup(t), rt_nidx_lookup(s), Int(0))
+}

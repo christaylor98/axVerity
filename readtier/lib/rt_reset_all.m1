@@ -1,0 +1,8 @@
+// rt_reset_all — the whole RAM tier back to empty: name-index plus the three
+// projections plus the result store. Nothing survives it, because nothing was
+// ever written outside this process.
+fn rt_reset_all(u: Unit) -> Unit {
+  let _n = rt_nidx_reset(Unit())
+  let _p = rt_proj_reset(Unit())
+  Unit()
+}

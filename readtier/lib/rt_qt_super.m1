@@ -1,0 +1,35 @@
+// rt_qt_super — supersession as the read path sees it. Superseding a name
+// mints a NEW internal id and makes it the head; the old id keeps its edges
+// but is no longer what the name resolves to. So a query by name answers about
+// the newest version, and the previous version's edges are reachable only
+// through the chain — which is the point of retaining them.
+fn rt_qt_super(u: Unit) -> Int {
+  let _r  = rt_reset_all(Unit())
+  let _1  = rt_insert_names(Text("a"), Text("likes"), Text("b"))   // a=0 likes=1 b=2
+  let n1  = rt_expect_int(Text("sup/before: a has 1 triple"), rt_q_sxx(Text("a")), Int(1))
+
+  let a2  = rt_nidx_insert(Text("a"))                              // supersede a -> id 3
+  let n2  = rt_expect_int(Text("sup/new id minted"),          a2,                   Int(3))
+  let n3  = rt_expect_int(Text("sup/name resolves to newest"), rt_nidx_lookup(Text("a")), Int(3))
+  let n4  = rt_expect_int(Text("sup/newest has no edges yet"), rt_q_sxx(Text("a")),  Int(0))
+  let n5  = rt_expect_int(Text("sup/superseded id retained"),  rt_nidx_prev(Int(3)), Int(0))
+
+  // the old version's edge is still in the projections, under the old id
+  let old = rt_key3(Text("0"), Text("1"), Text("2"))
+  let n6  = rt_expect_int(Text("sup/old edge still indexed"),  rt_q_xxx(Unit()),     Int(1))
+  let n7  = rt_expect_bool(Text("sup/old edge under old id"),  rt_out_has(old), Bool(true))
+
+  // giving the new version an edge does not resurrect the old one
+  let _2  = rt_insert_names(Text("a"), Text("knows"), Text("b"))   // knows=4, under a=3
+  let n8  = rt_expect_int(Text("sup/newest sees only its own"), rt_q_sxx(Text("a")), Int(1))
+  let new = rt_key3(Text("3"), Text("4"), Text("2"))
+  let n9  = rt_expect_bool(Text("sup/newest edge is the new one"), rt_out_has(new), Bool(true))
+  let n10 = rt_expect_bool(Text("sup/newest does not see old"),    rt_out_has(old), Bool(false))
+  let n11 = rt_expect_int(Text("sup/both versions still indexed"), rt_q_xxx(Unit()), Int(2))
+
+  let _r2 = rt_reset_all(Unit())
+  let s1 = int_add(int_add(n1, n2), int_add(n3, n4))
+  let s2 = int_add(int_add(n5, n6), int_add(n7, n8))
+  let s3 = int_add(int_add(n9, n10), n11)
+  int_add(int_add(s1, s2), s3)
+}

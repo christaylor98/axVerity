@@ -1,0 +1,16 @@
+// rt_pop_loop — the population loop with NOTHING in its body: the control.
+//
+// foreach's argument is range(0, n), a Value::List of n Value::Int, and the
+// Vec backing it is alive for the whole traversal (iter.rs:41-48 moves it in
+// and drops it at the end). At n = 1M that list is a real and unavoidable part
+// of the peak RSS the sweep measures, and it belongs to the BENCHMARK HARNESS,
+// not to the read tier. Subtracting this arm is what separates the two.
+//
+// The loop driver is deliberately identical to rt_populate's — same foreach,
+// same range — because a control that used a different driver would price a
+// different thing.
+fn rt_pop_loop(n: Int) -> Int {
+  let _r = rt_reset_all(Unit())
+  let _f = foreach(range(Int(0), n), rt_u32v_s0)
+  int_add(Int(0), Int(0))
+}

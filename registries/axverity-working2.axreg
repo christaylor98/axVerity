@@ -1,0 +1,667 @@
+// axverity-working2.axreg — §5b composites for the AXVERITY_WRITE_PATH_SLICE_V1
+// vertical. Every fn is kind leaf; bodies resolve via --lib-dir lib_coreir at
+// link time (FNREF_COMPOSITE_RESOLVER_v0.1). identity = sha256(utf8 name),
+// nothing else.
+// Bridge (Rust-resident) fns belong in axis-bridge.axreg, not here.
+// Types (Unit/Int/Text/Bool/Bytes/Value/TextList) are declared in
+// axis-bridge.axreg, co-fed with this registry by every invocation — do not
+// redeclare them here.
+//
+// The 4 src/*.m1 --entries outers (hot_mem_write, mem_controller,
+// disk_controller, flusher) do NOT get fn entries here — --entries binaries
+// are resolved by file-stem at bridge link time, not by registry identity
+// (verified: graphcore.axreg has no entry for gcore_serve/gcore_flush_worker/
+// gcore_pool_allocator/gcore_timer either).
+
+registry axverity-working2 0.1
+
+// ── Channel topology (CHANNELS_STATIC) ──────────────────────────────────────
+// mem_controller creates blocks, tracks them, and is the ONLY thing that
+// ever talks to disk_controller — sealing, ejection-triggering, all of
+// it. What it does NOT do is touch a block's own content (payload or
+// footer): it plans a block's footer content in advance (flag/next-seq,
+// computable purely from N and that block's own index, both known up
+// front) and hands the whole write bundle to hot_mem_write in one go.
+// hot_mem_write is the sole content writer — payload, footer, AND the
+// block's status marker — and reports back nothing except a bare
+// completion signal (wp-seal-done); mem_controller already knows the
+// block's address (it remembers what it assigned, via its own
+// self-mailbox) and derives the length itself (from its own seq * the
+// payload capacity it decided, against the input length it staged), so
+// there is nothing left for hot_mem_write to report. mem_controller waits
+// on that signal before forwarding to disk_controller — that's the one
+// piece of real synchronization in the whole pipeline, and it exists
+// purely so a block never gets forwarded for ejection before its write
+// has actually finished. flusher is the sole content reader, and resets
+// the block's status marker once ejected.
+//
+// Each physical block also gets its own status cell (cell_new_raw), an
+// atomic Int: 0 = not in use, 1 = writing, 2 = ready to read. mem_controller
+// stamps 0->1 at assignment time (pure bookkeeping — "this slot is now
+// spoken for", not touching content); hot_mem_write stamps 1->2
+// (cell_cas_raw) once its writes are done; flusher stamps 2->0 once it has
+// ejected. The cell address travels alongside its block's ptr everywhere,
+// the same way (ptr, len) do — no separate ptr-to-entry lookup table.
+//
+// Every channel below carries an address, an offset/length, planning data
+// (flag/next-seq), or a bare signal — never a block's actual bytes.
+//
+// Every group of related values below (an address + its status cell, a
+// full block assignment, etc.) travels as ONE list-valued message on ONE
+// channel (list_of_2/list_of_3/list_append — verified empirically through
+// the real toolchain, see scratchpad probe), not as N separate channels
+// read back-to-back. Each channel op is a Mutex-guarded VecDeque
+// operation; N separate takes for one logical unit is N lock/unlock
+// cycles for something that's really one event, and this is the most
+// time-sensitive layer in the pipeline. Building the list locally
+// (list_of_3/list_append) costs a few plain Vec pushes, no
+// synchronization at all — genuinely cheaper, not just tidier.
+
+// hot_mem_write stages the whole input into raw memory ITSELF at its own
+// startup (one fs_read_bytes + one mem_write_raw — no channel hop for the
+// bytes at all, since this is time-sensitive and every extra copy costs
+// real work). wp-input-ptr is hot_mem_write's own self-mailbox — nothing
+// else ever reads it, since only hot_mem_write's own step ever
+// dereferences the staged input. wp-input-len is the one piece
+// mem_controller actually needs (to derive each sealed block's length
+// from its own seq * payload-capacity arithmetic) — sent once by
+// hot_mem_write, read via take+put-back "peek" by both hot_mem_write's
+// own step and mem_controller's step. Either way, only a plain address or
+// a plain length ever crosses a channel here — never the bytes
+// themselves, and no encoding of either value beyond what they already
+// are (raw Ints).
+channel wp-input-ptr
+  type Value
+end
+
+channel wp-input-len
+  type Value
+end
+
+// flusher -> mem_controller: the pool of (block address, status-cell
+// address) pairs free for reuse — one list_of_2 message per pair.
+// Pre-seeded with the 2 spare blocks' pairs by mem_controller at startup
+// (the first block goes straight to hot_mem_write, same as before).
+channel wp-free-pool
+  type Value
+end
+
+// mem_controller -> hot_mem_write: everything hot_mem_write needs to
+// write one block, decided entirely in advance and handed over as ONE
+// list_of_5 message — [ptr, cap, status, flag, nextseq]. No sequence
+// number is included: hot_mem_write has no use for it — only
+// mem_controller cares about ejection ordering, and it already tracks
+// that as its own loop accumulator.
+channel wp-active-block
+  type Value
+end
+
+// mem_controller's own self-mailbox: which (block address, status-cell
+// address) it most recently assigned as active — one list_of_2 message.
+// Recalled at the start of each step to know what it's sealing —
+// hot_mem_write never reports this back, mem_controller already decided
+// it.
+channel wp-mc-active
+  type Value
+end
+
+// hot_mem_write -> mem_controller: a bare completion signal, nothing
+// else. mem_controller can't safely forward a block to disk_controller
+// until the write into it has actually finished, so this is purely a
+// synchronization barrier — not a data handoff.
+channel wp-seal-done
+  type Value
+end
+
+// mem_controller -> disk_controller: mem_controller is the only thing
+// that ever sends here — one list_of_4 message, [ptr, len, seq, status].
+// It never touched the block's content, but it derived the length itself
+// and recalled the address/status from its own self-mailbox.
+channel wp-write
+  type Value
+end
+
+// disk_controller -> flusher: same passthrough one hop further, same
+// [ptr, len, seq, status] shape. flusher is where the address finally
+// gets dereferenced (mem_read_raw) and the resulting bytes get written to
+// disk — as late as possible.
+channel wp-flush
+  type Value
+end
+
+// AXVERITY_WATERMARK_ACK_V1 — flusher's own self-mailbox for the durable-
+// watermark cell handle it minted at startup: wp_flusher_step takes it
+// and immediately puts it back every iteration (the same take+put-back
+// idiom wp-mc-active already uses), since loop_count's step fns take
+// exactly one Int accumulator and get everything else via a channel.
+channel wp-durable-cell
+  type Value
+end
+
+// AXVERITY_WATERMARK_ACK_V1 — one-shot handoff of the same cell handle to
+// ack_bench, read once at its own startup. Deliberately a separate
+// channel from wp-durable-cell: two independent take+put-back peekers on
+// the same bounded channel would contend/race for no reason.
+channel wp-durable-cell-pub
+  type Value
+end
+
+// AXVERITY_WATERMARK_ACK_V1 — ack_bench's own self-mailbox, mirroring
+// wp-durable-cell's role but for wp_ack_bench_step's per-iteration reads.
+channel wp-ackbench-cell
+  type Value
+end
+
+// AXVERITY_WATERMARK_ACK_V1 — flusher's durable-advance notification, via
+// bchan_send/bchan_take (bounded/blocking) — NOT channel_send/
+// event_subscribe/wait, since an M1-authored fn can't be used as wait()'s
+// Fn handler (see wp_wait_durable.m1's header). One bchan_take per
+// wp_wait_durable_step iteration blocks for the next notification; the
+// watermark cell is the actual source of truth, so consuming a
+// notification meant for a different target is harmless — only ever an
+// extra recheck, never incorrect (see wp_wait_durable.m1).
+channel wp-durable-advance
+  type Value
+end
+
+// ── Composites (lib/*.m1) ───────────────────────────────────────────────────
+
+// AXVERITY_EXTENT_WRITE_PATH step 1: was `effect pure` + `deterministic true`
+// while its body was the literal Int(16384). The body now reads
+// .axverity-store/config/block_capacity, so the declaration has to follow —
+// declaring a file read as pure is precisely the hazard CLAUDE.md section 2
+// names (CCall CSE hash-consing merges identical pure+deterministic calls).
+// Losing the dedup costs one config-file read per block, against a per-block
+// fsync measured at 9.005 ms.
+fn wp_block_capacity
+  identity 0xdd68cf0fb899e40c25c4c7740b79e9ddbb6e79bd6a26d00652e8ba736d70609d
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+fn wp_max_record
+  identity 0x9c4b15070728923ce081da14f20cb9d601d956fff6b794be7da0d24ca15d5760
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+// wp_cfg_get(name, dflt) -> Int — read one integer tunable from
+// .axverity-store/config/<name>, or return dflt when the file is absent.
+fn wp_cfg_get
+  identity 0xfbf2a751b41a7e985e9dc00e3d5db75eb3bb2ad433c38c3087aa03a42002d04b
+  kind leaf
+  in (Text, Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+// wp_pool_depth() -> Int — physical blocks in the hotframe pool. Default 3.
+fn wp_pool_depth
+  identity 0x6837cd396c0d4b7152fef6e7e2a11d5a5e9b76317f52a313677385f0e3deb0d4
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+
+
+fn wp_footer_size
+  identity 0x25be982ed22c1f47861cba7bdd3a82caf259294818ee5f3e8acd93d3c781c3f7
+  kind leaf
+  in (Unit)
+  out Int
+  effect pure
+  deterministic true
+  idempotent true
+end
+
+fn wp_write_step
+  identity 0x2157cd1445ac8923a609c347826666632f0d7c81fc1def6e503b8763cd53dfac
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_pack_record
+  identity 0x3208e615332699fc898e6ef321537017fcc726153a4a2e223a5d683f57788f8b
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_span_block
+  identity 0x83dbb456271bb6dc1d10b0b1c60d8a2531f5fc38326c33ee87fc034910d29bd2
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_span_record
+  identity 0x226dbf1707f8b898b8ecb65485911ff618aded5c0ee6025c42d8c80007b0a0c7
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_admit_record
+  identity 0x5e0b51771566d25ba17fe42b8154a924faebfca4d0f02823b7d6295e9a9af9e5
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_mem_controller_step
+  identity 0x7f59d6e51aaa82a900398d3f983a39f767169197515117773371f1dfb8ece014
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+
+
+fn wp_flusher_step
+  identity 0xfa5288eb5b82517572d9bad7f74d8c7302eeedb486e691fc6960b60010bb7d26
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// ── AXVERITY_WATERMARK_ACK_V1 — opt-in durability ack ───────────────────────
+
+fn wp_wait_durable
+  identity 0x85170149d2ccbf4ca6ad9af9ac5ba87f4653715930f910857111f21280ab0c4a
+  kind leaf
+  in (Int, Int)
+  out Unit
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_wait_durable_more
+  identity 0xa0434c87fb025650a15f877ed295c949367764afd9e7f0b99ea7d364de601f09
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+fn wp_wait_durable_step
+  identity 0xe78628e5a7ce214aec9338bfc799154bcf8eaa689c9f546b77a93bde484e2fb2
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_ack_bench_step
+  identity 0x80f72855ad00f6d1d142d72fc215f0c20990f553ef31ed07c665a3bb4e5d9759
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// ── AXVERITY_FORMAT_LAND_AND_WIRE_V1 (P2) ───────────────────────────────────
+// F1v framing, B1 block-id resolution and S2 stream separation. The B1
+// resolver is `effect fullIo` / `deterministic false` honestly: it reads the
+// durable store, and its answer changes as the store grows. Declaring it pure
+// would let CCall CSE hash-cons two resolves into one — which is precisely how
+// two runs would end up minting from the same id again.
+
+fn wp_stream_threshold
+  identity 0xa2593a119a869bcd2f63d3d51f54238f824fedfa77d6b363dd2996e0a4881fb7
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_bid_parse
+  identity 0xc82451786c8a1309a87ca39dda6fb37c627b01d13e7ffe7e31e65fa74e20c25c
+  kind leaf
+  in (Text)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_bid_scan_step
+  identity 0x82d83ad40a4fc3944571b4e34f090475b938cb1bdd3219a68c09732b3ad4dc84
+  kind leaf
+  in (Text)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_bid_resolve
+  identity 0x079c5d0d8db9cc8475aec0755d0f00540b78b8ad21b48e3e7eebd18132913a38
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_seal_stream
+  identity 0x20af57ac8da1d1575e24edd1d16a3ed87e7a757c0329d68a2c58e723d47e0b51
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_flush_tail
+  identity 0xbff446b5b34f73c87a0f75c38fd923583b522ae19bef9d3080f4acc559dee350
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+
+
+// wp_pool_mint_step(cap) -> Int — mint one free hotframe block of `cap` bytes
+// and push it onto wp-free-pool; returns `cap` unchanged (loop_count's
+// invariant state). effect fullIo, deterministic false: it allocates and sends
+// on a channel, so it must never be hash-consed with another mint.
+fn wp_pool_mint_step
+  identity 0x978641b1d47b444d7cee5457ad65172002d54d28e4b4cc8057c1e0a82878ba0b
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+
+// wp_cap_stamp(cap, first) -> Int — record the capacity this store's blocks were
+// written at (.axverity-store/block_capacity), or refuse to proceed if the store
+// already carries a different one. Capacity is fixed for the life of a store
+// because rt_rid_stride derives from it: changing it silently re-decodes every
+// existing RID. `first` is wp_bid_resolve's max+1, so 0 means the store is empty.
+fn wp_cap_stamp
+  identity 0xb3dfbc03ae1f49c3a27d5457e6f454f3f240f37265cbc8be6aeba4a255c8571b
+  kind leaf
+  in (Int, Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent true
+end
+
+fn wp_tick_sla_us
+  identity 0x62edee6cc623f8f31bb0472fcca754e3cb012ad3328888a1b347147204dc995c
+  kind leaf
+  in (Unit)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_tick_more
+  identity 0x9309448060ed652ee85e735534a71ae913a8313ef44059ee8ef6d6cd42f52d92
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_tick_step
+  identity 0xf20a277c6b9a25974639870acf4fa1c4fa45511282a5fce41756bd26e72f377b
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_dc_more
+  identity 0xc904d2145cc40fb4fe021b4fef770c160e44699923015023cbdaf247e45d5535
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_dc_step
+  identity 0xb4b031f7ff1e2af267c2223ab31eee775f139757d3749d99bd212451348df45d
+  kind leaf
+  in (Text)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_dc_drain_step
+  identity 0xdf1405849f0304ac01533bc94db060854aea9677f73cb7465f56197f698ac4ed
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// AXVERITY_EXTENT_WRITE_PATH step 2/3 — the coordinator's queue. TWO
+// producers (mem_controller's write bundles, the tick thread's SLA ticks),
+// ONE consumer (disk_controller). Messages are [0] for a tick and
+// [1, <bundle>] for a write: the kind leads so the bundle travels nested and
+// byte-identical to what mem_controller built, leaving flusher untouched.
+// One queue rather than two channels is what makes a single blocking take
+// sufficient — no non-blocking take exists in M1, and none is needed.
+channel wp-dc
+  type Value
+end
+
+// AXVERITY_EXTENT_WRITE_PATH step 2 — one-shot handoff of the run cell to the
+// tick thread. The tick loop is the pipeline's only unbounded loop; this cell
+// is how it learns the run has ended. A cell rather than a channel because the
+// timer must ask "still running?" WITHOUT blocking.
+channel wp-run-cell-pub
+  type Value
+end
+
+fn wp_mc_more
+  identity 0xc1ece7bef74a1a2612ed90afa06fe74a21671316ddb3b1942c28f7cb4a4f976f
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_mc_assign
+  identity 0xc5d9dc74d1c5cf41a508f5697f48b0cc1db2adbec2e78ec8bbc81f3cbf13525f
+  kind leaf
+  in (Text, Int, Int)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_flusher_more
+  identity 0x7c691244e959bd46d28ef03b8a83a58090ef80e6b57ced6249cac6c4591dd8eb
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+
+fn wp_ack_more
+  identity 0x152d76b3d9e65dc80f4d3f7317877110a481486e5a20db8ff5d5e6902c9ed0cd
+  kind leaf
+  in (Text)
+  out Bool
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+
+// AXVERITY_EXTENT_WRITE_PATH step 5a — the flusher's one-shot handoff of the
+// run's final durable seq to ack_bench. ack_bench cannot be bound by a channel
+// sentinel the way the pipeline stages are: it does not consume the pipeline,
+// it races ahead of it waiting on the watermark. This is how it learns where
+// the end is, read non-blockingly so learning it never becomes the wait.
+channel wp-ack-final-pub
+  type Value
+end
+
+// The flusher's own self-mailbox for the same cell handle: taken and put back
+// at end of stream, the idiom wp-durable-cell already uses.
+channel wp-ack-final-cell
+  type Value
+end
+
+fn wp_flusher_eject
+  identity 0xe168f789e7398d9b4ad524ed5d54e9a5d482a0d2a70c65b1092d2b0dce6ca9f4
+  kind leaf
+  in (Unit)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_flusher_eos
+  identity 0x0192a54e65a0933d59a95a6552a4d9e91ae63c28df03bc9e5d04dd7527941329
+  kind leaf
+  in (Unit)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+fn wp_dc_drain_one
+  identity 0xeebccc4175f874ca629bdcff8392c226fd0191e9fcf9a0578aa20a6a887cbcb6
+  kind leaf
+  in (Int)
+  out Int
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// AXVERITY_EXTENT_WRITE_PATH step 5a — the flusher's internal handoff. The
+// dispatch takes one message off wp-flush and posts it here so that whichever
+// half runs can take it back. It exists because `Value` is not a legal M1
+// surface type for a fn parameter, and the halves MUST be fns: an `if` nested
+// inside another branch executes its untaken side, which parked the flusher on
+// its own depth-1 trim against an empty queue.
+channel wp-flush-live
+  type Value
+end
+
+fn wp_flusher_tick
+  identity 0x4173cdd5ce74f7326778a0b25307e352c21bdff97ab864f0c3f548483ce17055
+  kind leaf
+  in (Unit)
+  out Text
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// AXVERITY_EXTENT_WRITE_PATH 5d — the flusher's per-stream slab handles, held
+// as self-mailboxes (take and put back each use), because slablock's handles
+// are thread-local and loop_while's Fn arguments carry one typed value.
+channel wp-slab-s
+  type Value
+end
+
+channel wp-slab-p
+  type Value
+end
+
+fn wp_promote_durable
+  identity 0xc5100380c3176677e5040b99e1076da83a75b21ffd5fb131b5c255c86572aa94
+  kind leaf
+  in (Unit)
+  out Unit
+  effect fullIo
+  deterministic false
+  idempotent false
+end
+
+// AXVERITY_EXTENT_WRITE_PATH — the highest seq APPENDED, as distinct from the
+// highest DURABLE. Under 5d slab_append_raw never fsyncs, so the two are
+// different events and one counter cannot honestly mean both. Held as a
+// self-mailbox, the idiom wp-durable-cell already uses.
+channel wp-appended-cell
+  type Value
+end
+
+fn wp_publish_ids
+  identity 0xcd3b22b8b7df298f84b8533deb5679daf1ebb19f84d2148ac01cc7590d593d64
+  kind leaf
+  in (Int, Int)
+  out Unit
+  effect fullIo
+  deterministic false
+  idempotent false
+end

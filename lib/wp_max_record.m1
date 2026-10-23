@@ -1,0 +1,38 @@
+// wp_max_record — the largest RECORD this store will admit, in bytes.
+//
+// AXVERITY_SIZE_THRESHOLD_RECONCILE (2026-08-25). A POLICY limit, sitting over
+// nothing structural, and configurable because the right value depends on
+// what a deployment actually stores — if someone wants to run it wide open,
+// that is their call and it may well suit them.
+//
+// Default 65536, chosen on what is efficient for THIS system rather than on
+// what an external producer might emit (experiments/threshold, CLAUDE.md
+// section 9):
+//
+//   * FILL. At a 4 MiB block, fill is >=97% at or below cap/64 = 64 KiB, still
+//     96.9% at 500 KB, then cliffs: 74.4% at cap/4 and 50% at cap/2. Nothing
+//     above cap/64 buys anything, it only spends store space.
+//   * HEADROOM. The framing ceiling is 2097151 and one byte past it was SILENT
+//     LOSS until it was guarded. 64 KiB sits 32x below that edge; 500 KB sits
+//     4x below it. An order of magnitude of slack is worth more than the range.
+//   * WHAT A RECORD IS. A record is a triple — three names — and the read tier
+//     builds its name index over those terms. A 500 KB term is not a name, it
+//     is a document, and the graph is not where documents live.
+//
+// Raising it later is free; lowering it after data exists is a migration. So
+// the default errs small deliberately — small is the reversible direction.
+//
+// THERE IS NO STRUCTURAL BOUND UNDER IT — set it as high as you like. An
+// earlier revision of this file capped it at 2097151, what the three-byte
+// length prefix can encode, and refused a larger configuration at startup.
+// AXVERITY_SPAN_RESTORE removed the need: a record too long to frame, or too
+// large for a block, is written UNFRAMED across consecutive blocks and
+// reassembled on read, so neither the prefix nor the capacity limits what may
+// be admitted. A spanning record is indexed like any other
+// (readtier/lib/rt_span_index.m1), so raising this cannot produce a record that
+// is stored and then not returned.
+//
+// Override: .axverity-store/config/max_record
+fn wp_max_record(_u: Unit) -> Int {
+  wp_cfg_get(Text("max_record"), Int(65536))
+}

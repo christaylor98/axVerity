@@ -1,0 +1,12 @@
+// rt_rid_of — the durable RID for a name, or -1 if the name is not in the
+// durable store.
+//
+// One integer out, by construction — see rt_rid_stride. The caller decodes it
+// to a block and an ordinal arithmetically, or hands it straight to
+// rt_read_rid, and at no point does a second lookup table stand between a name
+// and its bytes.
+fn rt_rid_of(name: Text) -> Int {
+  let h = map_get(Text("rt:ridx"), name)
+  let r = if str_eq(h, Text("")) { int_sub(Int(0), Int(1)) } else { str_to_int(h) }
+  int_add(r, Int(0))
+}

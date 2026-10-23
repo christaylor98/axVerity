@@ -1,0 +1,20 @@
+// rt_query — the traversal read API's single entry point. `mask` is a bitset
+// of which fields are bound: 1=S, 2=V, 4=T. Unbound arguments are ignored.
+// Returns the cardinality; the result set itself is in the named result store,
+// readable with rt_out_count / rt_out_at / rt_out_has.
+//
+// Every arm routes to the projection whose prefix serves that binding pattern.
+// No arm scans: the two patterns whose cost grows with population (0 and 2 —
+// nothing bound, and verb-only) grow because their ANSWER grows, not because
+// the structure is walked.
+fn rt_query(mask: Int, s: Text, v: Text, t: Text) -> Int {
+  let r = if int_eq(mask, Int(0)) { rt_q_xxx(Unit()) } else {
+    if int_eq(mask, Int(1)) { rt_q_sxx(s) } else {
+    if int_eq(mask, Int(2)) { rt_q_xvx(v) } else {
+    if int_eq(mask, Int(3)) { rt_q_svx(s, v) } else {
+    if int_eq(mask, Int(4)) { rt_q_xxt(t) } else {
+    if int_eq(mask, Int(5)) { rt_q_sxt(s, t) } else {
+    if int_eq(mask, Int(6)) { rt_q_xvt(v, t) } else {
+                              rt_q_svt(s, v, t) } } } } } } }
+  int_add(r, Int(0))
+}

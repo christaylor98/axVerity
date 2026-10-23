@@ -1,0 +1,93 @@
+// rt_rebuild — COLD REBUILD. Reconstruct the whole RAM tier from the durable
+// structure stream alone, with no state carried over from the process that
+// wrote it.
+//
+// This is the read tier's answer to the question its own README said it could
+// not yet ask: "durable blocks have no record framing and no stable block id,
+// so a durable name -> RID map would be WRONG after restart, not stale." F1v
+// gave records boundaries and B1 gave blocks identities that survive a
+// restart, so the map is now well defined.
+//
+// IT READS BOTH STREAMS (AXVERITY_SILENT_LOSS_FIX_V1, closing the wire
+// harness's W1). It used to read the STRUCTURE stream alone, on the premise
+// that "the payload blocks hold the bulk of the bytes and none of the graph".
+// The premise is false, and it was false the moment S2 routed on SIZE: a
+// record goes to payload when it exceeds wp_stream_threshold's 32 bytes
+// (wp_write_step.m1:42-43), and nothing about a graph record keeps it under
+// 32 bytes. Three names averaging ten characters are already over it. So a
+// structure-only scan silently dropped every triple a real consumer emits —
+// admitted, counted, written durably, and invisible to every query, with the
+// only wire-visible symptom being this fn's return value disagreeing with
+// ADMIT's own admitted= count.
+//
+// The two streams share ONE id space (wp_bid_resolve.m1:27-28), so a block id
+// names exactly one file in exactly one directory and folding the union
+// cannot index a block twice. Nothing about the durable format changes here:
+// the 32-byte threshold is a routing rule, not a format constant — the same
+// bytes decode identically from either directory, which is what
+// experiments/silentloss/ reproduces.
+//
+// THE COST IS REAL AND IS DELIBERATE. Structure-only replay is what bought the
+// measured 23-25x cold rebuild, and a union scan gives back a share of it
+// proportional to how much of the store is genuinely payload. Correctness is
+// not tradeable against it: a rebuild that is fast because it skipped your
+// data is not a fast rebuild. If the speedup is wanted back it has to come
+// from routing that knows a structure record from a blob, which is a write-
+// path question and a separate authorisation.
+//
+// Each directory is probed before it is listed, because fs_list_dir panics on
+// a missing directory (io.rs:137) and a store may legitimately have only one
+// stream materialised.
+//
+// Everything the tier holds is dropped first, including rt:ridx, which
+// rt_reset_all does not know about — the durable index is this intent's
+// addition and clearing it belongs with the rebuild that repopulates it. A
+// rebuild that merged into a stale index would answer from data it never read.
+//
+// Scratch slot 104 counts directory entries rejected by the strict parse; 96
+// counts malformed records. Both are reported rather than swallowed, because a
+// rebuild that silently skipped half a store would still return "correct"
+// answers for everything it did read.
+fn rt_rebuild(_u: Unit) -> Int {
+  let _r  = rt_reset_all(Unit())
+  let _rx = map_clear(Text("rt:ridx"))
+  let ds  = Text(".axverity-store/structure")
+  let dp  = Text(".axverity-store/payload")
+
+  let res  = mem_reserve_raw(Int(256))
+  let sptr = tuple_field(res, Int(0))
+  let _z0  = mem_write_int_raw(sptr, Int(40),  Int(0))   // mode 0 = index
+  let _z1  = mem_write_int_raw(sptr, Int(72),  Int(0))   // records seen
+  let _z2  = mem_write_int_raw(sptr, Int(96),  Int(0))   // malformed records
+  let _z3  = mem_write_int_raw(sptr, Int(104), Int(0))   // skipped entries
+  let _mb  = bchan_send(Text("rt-dscan"), sptr)
+
+  let t0  = now_unix_nanos(Unit())
+  let _fs = if fs_file_exists(ds) {
+              let _ds = map_put(Text("rt:d"), Text("dir"), ds)
+              let lss = fs_list_dir(ds)
+              foreach(lss, rt_dblk_step)
+            } else {
+              io_print(Text(""))
+            }
+  let _fp = if fs_file_exists(dp) {
+              let _dp = map_put(Text("rt:d"), Text("dir"), dp)
+              let lsp = fs_list_dir(dp)
+              foreach(lsp, rt_dblk_step)
+            } else {
+              io_print(Text(""))
+            }
+  let t1  = now_unix_nanos(Unit())
+  let _tk = bchan_take(Text("rt-dscan"))
+
+  let nrec = mem_read_int_raw(sptr, Int(72))
+  let bad  = mem_read_int_raw(sptr, Int(96))
+  let skip = mem_read_int_raw(sptr, Int(104))
+  let _p1 = io_println(str_concat(Text("rebuild_records="), int_to_str(nrec)))
+  let _p2 = io_println(str_concat(Text("rebuild_malformed="), int_to_str(bad)))
+  let _p3 = io_println(str_concat(Text("rebuild_skipped_entries="), int_to_str(skip)))
+  let _p4 = io_println(str_concat(Text("rebuild_names="), int_to_str(rt_nidx_count(Unit()))))
+  let _p5 = io_println(str_concat(Text("rebuild_ns="), int_to_str(int_sub(t1, t0))))
+  let _fr = mem_free_raw(sptr, Int(256))
+  int_add(nrec, Int(0))
+}

@@ -1,0 +1,39 @@
+// NESTED_IF_WORKAROUND (FORCED): has its own `if`, so it cannot be inlined into
+// a branch. Revert scope — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+//
+// wp_pack_record — write ONE record that fits a block, framed.
+//
+// This is wp_write_step's original body, extracted unchanged in behaviour.
+// AXVERITY_SPAN_RESTORE split it out because admission now chooses between two
+// paths and an `if` nested inside a branch executes its untaken side; the
+// dispatch must branch to fns, never to blocks that contain `if`s.
+//
+// Scratch: 32 pcap, 40/56 staging base and 48/64 cursor (stride 16 by stream),
+// 96 the stream selector, 152 vlen, 160 venc — the last two computed once by
+// wp_write_step so the varint encoder lives in exactly one place.
+fn wp_pack_record(sptr: Int) -> Int {
+  let iptr  = mem_read_int_raw(sptr, Int(0))
+  let roff  = mem_read_int_raw(sptr, Int(16))
+  let len   = mem_read_int_raw(iptr, roff)
+  let sel   = mem_read_int_raw(sptr, Int(96))
+  let bslot = int_add(Int(40), int_mul(sel, Int(16)))
+  let cslot = int_add(Int(48), int_mul(sel, Int(16)))
+  let pcap  = mem_read_int_raw(sptr, Int(32))
+  let vlen  = mem_read_int_raw(sptr, Int(152))
+  let venc  = mem_read_int_raw(sptr, Int(160))
+  let bo    = mem_read_int_raw(sptr, cslot)
+  let need  = int_add(len, vlen)
+
+  // Seal THIS stream when the record will not fit. The other stream's buffer
+  // is untouched — that is what separation means here, and it is why the id
+  // counter has to be shared rather than per-stream.
+  let full = bool_and(int_gt(int_add(bo, need), pcap), int_gt(bo, Int(0)))
+  let _sl  = if full { wp_seal_stream(sptr) } else { int_add(sptr, Int(0)) }
+
+  let bptr = mem_read_int_raw(sptr, bslot)
+  let boff = mem_read_int_raw(sptr, cslot)
+  let _p   = mem_write_int_raw(bptr, boff, venc)
+  let _c   = mem_copy_raw(bptr, int_add(boff, vlen), iptr, int_add(roff, Int(8)), len)
+  let _b   = mem_write_int_raw(sptr, cslot, int_add(boff, need))
+  int_add(sptr, Int(0))
+}

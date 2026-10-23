@@ -1,0 +1,14 @@
+// rt_ordbench — the ordinal sweep, run against a rebuilt store.
+//
+// Block 0 only, so the file-location cost is constant across every row and the
+// difference between rows is the scan. Four points rather than two: a scan
+// should be linear in the ordinal, and three intervals show that more
+// convincingly than one.
+fn rt_ordbench(_u: Unit) -> Int {
+  let _rb = rt_rebuild(Unit())
+  let _a  = rt_bench_ord(Int(0))
+  let _b  = rt_bench_ord(Int(200))
+  let _c  = rt_bench_ord(Int(400))
+  let _d  = rt_bench_ord(Int(800))
+  int_add(Int(0), Int(0))
+}

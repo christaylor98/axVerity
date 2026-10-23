@@ -1,0 +1,34 @@
+// rt_dscan_more — loop_while's condition for a block scan: is there another
+// record before the footer?
+//
+// The scan is a loop_while rather than a loop_count because a block does not
+// record how many records it holds — the file's own length is the terminator,
+// which is exactly what lets a block be variable-length and never padded. A
+// loop_count would need a bound, and the only SAFE bound is one iteration per
+// payload byte (a framed record can be as short as one byte), which for a
+// 16 KB block is ~16,000 no-op iterations per block whether it holds 5 records
+// or 500. That would not be wrong, but it would make a cold-rebuild
+// measurement a measurement of the bound rather than of the data.
+//
+// Threading the scratch POINTER as the loop state is what makes this safe:
+// loop_while clones its accumulator on every iteration (iter.rs:78), so an
+// accumulator carrying the unconsumed input would be O(N^2) — the same shape
+// as the list-fold finding. An Int clone is free, and the block itself sits in
+// raw memory that is never named.
+//
+// The off >= 0 guard is how a malformed block ends the scan: rt_dscan_step
+// drives the cursor negative rather than trying to decode past damage.
+//
+// A point read stops as soon as it has its record. Without that, mode 1 walked
+// the whole block every time and a point read cost the same at ordinal 0 as at
+// ordinal 800 — measured flat at ~1.17 ms, which is what exposed the missing
+// exit. It was a real defect and not a property of the format: F1v makes
+// reaching record k cost the k records before it, not the whole block.
+fn rt_dscan_more(sptr: Int) -> Bool {
+  let off  = mem_read_int_raw(sptr, Int(16))
+  let lim  = mem_read_int_raw(sptr, Int(8))
+  let mode = mem_read_int_raw(sptr, Int(40))
+  let foff = mem_read_int_raw(sptr, Int(80))
+  let done = bool_and(int_gt(mode, Int(0)), int_gte(foff, Int(0)))
+  bool_and(bool_and(int_lt(off, lim), int_gte(off, Int(0))), bool_not(done))
+}

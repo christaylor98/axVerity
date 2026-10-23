@@ -1,0 +1,4 @@
+// sh_always — loop predicate that is always true (the index thread runs for the process's life).
+fn sh_always(sptr: Int) -> Bool {
+  int_gte(sptr, Int(0))
+}

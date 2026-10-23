@@ -1,0 +1,57 @@
+// wp_wait_durable — opt-in durability ack (AXVERITY_WATERMARK_ACK_V1,
+// adapted to this repo's own architecture, no cross-repo reuse). Blocks
+// the calling context until block `target`'s bytes have been durably
+// been made durable by the flusher — under 5d that means a slab_tick sweep
+// (or the end-of-stream seal) has fsynced it, NOT merely that it was appended.
+//
+// Reuses ONLY existing bridge primitives (bchan_take/cell_load_raw/
+// loop_while) — no new bridge code, no M1-authored wait() handler (M1
+// composites can't be used as wait()'s Fn argument — only bridge-native
+// fns can, verified empirically: `Value` is not a legal M1 surface type
+// for a fn param/return at all, parse error at the fn's own token, and
+// graphcore's own only wait() call site — gcore_flush_step.m1 — passes a
+// bridge-resident fn, never an M1 one). `cell` is the durable-watermark
+// cell handle flusher minted at its own startup (see src/flusher.m1) and
+// published on wp-durable-cell-pub; `target` is the block sequence
+// number to wait for (the same `seq` flusher's own footer-chain already
+// uses as the unambiguous logical identity — never a raw pointer, since
+// pool blocks get physically reused across many seqs, per
+// wp_mem_controller_step.m1's own header note).
+//
+// State is Text, "<cell> FS <target>" (chr(28), the same field-separator
+// convention graphcore's own loop_while state encoding uses throughout,
+// e.g. gr_qmore/gr_join) — not a Value/list, for the same reason: Value
+// is not an accepted M1 type annotation, only a registry contract type.
+//
+// No explicit subscribe-before-check step is needed the way an
+// event_subscribe/wait design would require: bchan_take blocks on the
+// SAME durable-advance queue flusher bchan_sends to, and loop_while's
+// condition (wp_wait_durable_more) is checked BEFORE every bchan_take,
+// against the watermark cell itself (the actual source of truth) — so a
+// target that's already durable by the time this is called never touches
+// the channel at all, and a notification meant for a later target is
+// never "stolen": consuming any notification only ever causes an extra
+// harmless recheck, since the watermark is monotonic and shared.
+// ⚠ AXVERITY_EXTENT_WRITE_PATH step 5a — THIS RETURNS FOR EVERY TARGET ONCE
+// THE RUN ENDS, INCLUDING ONES THAT WERE NEVER WRITTEN.
+//
+// wp_flusher_eos bumps the durable watermark to 1000000000 at end of stream so
+// that a caller parked on a seq the run will never reach is released instead
+// of blocking forever. A notification alone cannot do it — the notification is
+// only a hint and the recheck below would still fail — so the cell itself has
+// to move.
+//
+// The consequence is a contract on YOU, not on this fn: a return means EITHER
+// `target` became durable OR the run ended. If the difference matters, re-read
+// the run's final seq from wp-ack-final-cell AFTER this returns and discard the
+// case where `target` is past it. wp_ack_bench_step is the worked example.
+//
+// This is deliberately stated here rather than only at that call site, because
+// the failure mode is silent: a consumer that skips the recheck treats "the
+// run is over" as "your block is durable" and gets no error at all.
+fn wp_wait_durable(cell: Int, target: Int) -> Unit {
+  let fs   = chr(Int(28))
+  let init = str_concat(int_to_str(cell), str_concat(fs, int_to_str(target)))
+  let _fin = loop_while(init, wp_wait_durable_more, wp_wait_durable_step, Int(100000000))
+  Unit()
+}

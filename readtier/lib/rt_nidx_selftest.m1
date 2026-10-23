@@ -1,0 +1,63 @@
+// rt_nidx_selftest — W1 correctness. Covers the empty index, first insert,
+// get-or-insert idempotence, the supersession chain (new id becomes head, old
+// retained behind it and still reachable), the reverse map, unknown-id and
+// unknown-name behaviour, and reset. Returns the failure count.
+//
+// Runs entirely in RAM: no file is opened, so there is no fixture to lay down
+// and no state that can survive into the next run.
+fn rt_nidx_selftest(u: Unit) -> Int {
+  let _r0 = rt_nidx_reset(Unit())
+
+  // --- empty index ---------------------------------------------------------
+  let e1 = rt_expect_int(Text("nidx/empty lookup is -1"), rt_nidx_lookup(Text("a")), int_sub(Int(0), Int(1)))
+  let e2 = rt_expect_int(Text("nidx/empty count is 0"),   rt_nidx_count(Unit()),    Int(0))
+  let e3 = rt_expect_int(Text("nidx/empty distinct is 0"), rt_nidx_distinct(Unit()), Int(0))
+
+  // --- first insert --------------------------------------------------------
+  let ia = rt_nidx_insert(Text("a"))
+  let f1 = rt_expect_int(Text("nidx/first id is 0"),        ia,                          Int(0))
+  let f2 = rt_expect_int(Text("nidx/lookup finds head"),    rt_nidx_lookup(Text("a")),   Int(0))
+  let f3 = rt_expect_text(Text("nidx/reverse map"),         rt_nidx_name_of(Int(0)),     Text("a"))
+  let f4 = rt_expect_int(Text("nidx/head has no prev"),     rt_nidx_prev(Int(0)),        int_sub(Int(0), Int(1)))
+  let f5 = rt_expect_int(Text("nidx/count is 1"),           rt_nidx_count(Unit()),       Int(1))
+  let f6 = rt_expect_int(Text("nidx/distinct is 1"),        rt_nidx_distinct(Unit()),    Int(1))
+
+  // --- resolve is get-or-insert, not supersede -----------------------------
+  let g1 = rt_expect_int(Text("nidx/resolve hit reuses id"), rt_nidx_resolve(Text("a")), Int(0))
+  let g2 = rt_expect_int(Text("nidx/resolve hit mints nothing"), rt_nidx_count(Unit()),  Int(1))
+  let g3 = rt_expect_int(Text("nidx/resolve miss mints"),    rt_nidx_resolve(Text("b")), Int(1))
+  let g4 = rt_expect_int(Text("nidx/count is 2"),            rt_nidx_count(Unit()),      Int(2))
+  let g5 = rt_expect_int(Text("nidx/distinct is 2"),         rt_nidx_distinct(Unit()),   Int(2))
+
+  // --- supersession: new entry becomes head, old retained behind it --------
+  let ia2 = rt_nidx_insert(Text("a"))
+  let h1 = rt_expect_int(Text("nidx/supersede mints new id"), ia2,                        Int(2))
+  let h2 = rt_expect_int(Text("nidx/head is newest"),         rt_nidx_lookup(Text("a")),  Int(2))
+  let h3 = rt_expect_int(Text("nidx/old retained behind"),    rt_nidx_prev(Int(2)),       Int(0))
+  let h4 = rt_expect_int(Text("nidx/chain terminates"),       rt_nidx_prev(Int(0)),       int_sub(Int(0), Int(1)))
+  let h5 = rt_expect_text(Text("nidx/old id keeps its name"), rt_nidx_name_of(Int(0)),    Text("a"))
+  let h6 = rt_expect_text(Text("nidx/new id has same name"),  rt_nidx_name_of(Int(2)),    Text("a"))
+  let h7 = rt_expect_int(Text("nidx/count counts versions"),  rt_nidx_count(Unit()),      Int(3))
+  let h8 = rt_expect_int(Text("nidx/distinct counts names"),  rt_nidx_distinct(Unit()),   Int(2))
+
+  // --- unknown keys --------------------------------------------------------
+  let u1 = rt_expect_text(Text("nidx/unknown id has no name"), rt_nidx_name_of(Int(99)),  Text(""))
+  let u2 = rt_expect_int(Text("nidx/unknown name is -1"),      rt_nidx_lookup(Text("zz")), int_sub(Int(0), Int(1)))
+  let u3 = rt_expect_int(Text("nidx/unknown prev is -1"),      rt_nidx_prev(Int(99)),      int_sub(Int(0), Int(1)))
+
+  // --- reset ---------------------------------------------------------------
+  let _r1 = rt_nidx_reset(Unit())
+  let z1 = rt_expect_int(Text("nidx/reset clears count"),  rt_nidx_count(Unit()),      Int(0))
+  let z2 = rt_expect_int(Text("nidx/reset clears lookup"), rt_nidx_lookup(Text("a")),  int_sub(Int(0), Int(1)))
+  let z3 = rt_expect_int(Text("nidx/reset restarts ids"),  rt_nidx_insert(Text("q")),  Int(0))
+  let _r2 = rt_nidx_reset(Unit())
+
+  let s1 = int_add(int_add(e1, e2), int_add(e3, f1))
+  let s2 = int_add(int_add(f2, f3), int_add(f4, f5))
+  let s3 = int_add(int_add(f6, g1), int_add(g2, g3))
+  let s4 = int_add(int_add(g4, g5), int_add(h1, h2))
+  let s5 = int_add(int_add(h3, h4), int_add(h5, h6))
+  let s6 = int_add(int_add(h7, h8), int_add(u1, u2))
+  let s7 = int_add(int_add(u3, z1), int_add(z2, z3))
+  int_add(int_add(int_add(s1, s2), int_add(s3, s4)), int_add(int_add(s5, s6), s7))
+}

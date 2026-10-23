@@ -1,0 +1,37 @@
+// rt_qt_cards — every one of the eight binding patterns answers with the right
+// cardinality over the fixture graph, including the duplicate-insert case.
+fn rt_qt_cards(u: Unit) -> Int {
+  let a1 = rt_expect_int(Text("q/??? all triples, duplicate folded"), rt_q_xxx(Unit()), Int(5))
+  let b1 = rt_expect_int(Text("q/S?? a"),          rt_q_sxx(Text("a")),                    Int(3))
+  let b2 = rt_expect_int(Text("q/S?? d"),          rt_q_sxx(Text("d")),                    Int(2))
+  let c1 = rt_expect_int(Text("q/?V? likes"),      rt_q_xvx(Text("likes")),                Int(3))
+  let c2 = rt_expect_int(Text("q/?V? knows"),      rt_q_xvx(Text("knows")),                Int(1))
+  let d1 = rt_expect_int(Text("q/??T b"),          rt_q_xxt(Text("b")),                    Int(3))
+  let d2 = rt_expect_int(Text("q/??T c"),          rt_q_xxt(Text("c")),                    Int(1))
+  let e1 = rt_expect_int(Text("q/SV? a likes"),    rt_q_svx(Text("a"), Text("likes")),     Int(2))
+  let e2 = rt_expect_int(Text("q/SV? a knows"),    rt_q_svx(Text("a"), Text("knows")),     Int(1))
+  let f1 = rt_expect_int(Text("q/?VT likes b"),    rt_q_xvt(Text("likes"), Text("b")),     Int(2))
+  let f2 = rt_expect_int(Text("q/?VT hates e"),    rt_q_xvt(Text("hates"), Text("e")),     Int(1))
+  let g1 = rt_expect_int(Text("q/S?T a b"),        rt_q_sxt(Text("a"), Text("b")),         Int(2))
+  let g2 = rt_expect_int(Text("q/S?T d e"),        rt_q_sxt(Text("d"), Text("e")),         Int(1))
+  let h1 = rt_expect_int(Text("q/SVT a likes b"),  rt_q_svt(Text("a"), Text("likes"), Text("b")), Int(1))
+  let h2 = rt_expect_int(Text("q/SVT a likes e"),  rt_q_svt(Text("a"), Text("likes"), Text("e")), Int(0))
+
+  // the mask dispatcher must agree with the eight direct entry points
+  let m0 = rt_expect_int(Text("q/mask 0 == ???"), rt_query(Int(0), Text(""), Text(""), Text("")), Int(5))
+  let m1 = rt_expect_int(Text("q/mask 1 == S??"), rt_query(Int(1), Text("a"), Text(""), Text("")), Int(3))
+  let m2 = rt_expect_int(Text("q/mask 2 == ?V?"), rt_query(Int(2), Text(""), Text("likes"), Text("")), Int(3))
+  let m3 = rt_expect_int(Text("q/mask 3 == SV?"), rt_query(Int(3), Text("a"), Text("likes"), Text("")), Int(2))
+  let m4 = rt_expect_int(Text("q/mask 4 == ??T"), rt_query(Int(4), Text(""), Text(""), Text("b")), Int(3))
+  let m5 = rt_expect_int(Text("q/mask 5 == S?T"), rt_query(Int(5), Text("a"), Text(""), Text("b")), Int(2))
+  let m6 = rt_expect_int(Text("q/mask 6 == ?VT"), rt_query(Int(6), Text(""), Text("likes"), Text("b")), Int(2))
+  let m7 = rt_expect_int(Text("q/mask 7 == SVT"), rt_query(Int(7), Text("a"), Text("likes"), Text("b")), Int(1))
+
+  let s1 = int_add(int_add(a1, b1), int_add(b2, c1))
+  let s2 = int_add(int_add(c2, d1), int_add(d2, e1))
+  let s3 = int_add(int_add(e2, f1), int_add(f2, g1))
+  let s4 = int_add(int_add(g2, h1), int_add(h2, m0))
+  let s5 = int_add(int_add(m1, m2), int_add(m3, m4))
+  let s6 = int_add(int_add(m5, m6), m7)
+  int_add(int_add(int_add(s1, s2), int_add(s3, s4)), int_add(s5, s6))
+}

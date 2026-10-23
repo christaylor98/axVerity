@@ -1,0 +1,17 @@
+// rt_expect_int — one Int assertion. Prints PASS/FAIL with the label and
+// returns the failure count (0 or 1) so callers can sum them. Test plumbing
+// only; nothing in the index calls it.
+fn rt_expect_int(label: Text, got: Int, want: Int) -> Int {
+  let ok = int_eq(got, want)
+  let _p = if ok {
+    io_println(str_concat(Text("  PASS  "), label))
+  } else {
+    io_println(str_concat(Text("  FAIL  "),
+      str_concat(label,
+        str_concat(Text("   got="),
+          str_concat(int_to_str(got),
+            str_concat(Text(" want="), int_to_str(want)))))))
+  }
+  let r = if ok { int_add(Int(0), Int(0)) } else { int_add(Int(1), Int(0)) }
+  int_add(r, Int(0))
+}

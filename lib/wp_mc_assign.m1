@@ -1,0 +1,52 @@
+// NESTED_IF_WORKAROUND (split-counterpart): no ifs of its own.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_mc_assign — the live half of a mem_controller step: forward the sealed
+// block for ejection and hand the packer the next one. Separate so the
+// sentinel path does none of it — claiming a pool block on the way out would
+// leak one and could block on an empty free pool at shutdown.
+fn wp_mc_assign(state: Text, stream: Int, len: Int) -> Text {
+  let fs     = chr(Int(28))
+  let seq    = str_to_int(str_before(state, fs))
+
+  let cur    = bchan_take(Text("wp-mc-active"))
+  let ptr    = list_get(cur, Int(0))
+  let status = list_get(cur, Int(1))
+
+  let cap  = wp_block_capacity(Unit())
+  let fsz  = wp_footer_size(Unit())
+  let pcap = int_sub(cap, fsz)
+
+  // AXVERITY_EXTENT_WRITE_PATH step 3: onto the coordinator's queue, tagged
+  // kind 1 = write. The bundle itself is UNCHANGED and travels nested, so
+  // flusher still receives exactly the [ptr, len, seq, status, stream] shape
+  // it always did — the tag is stripped by wp_dc_step, one hop earlier.
+  let wbundle = list_append(list_append(list_of_3(ptr, len, seq), status), stream)
+  let _w = bchan_send(Text("wp-dc"), list_of_2(Int(1), wbundle))
+
+  let free    = bchan_take(Text("wp-free-pool"))
+  let nptr    = list_get(free, Int(0))
+  let nstatus = list_get(free, Int(1))
+  let _mark   = cell_cas_raw(nstatus, Int(0), Int(1))
+
+  // AXVERITY_EXTENT_WRITE_PATH: THE FOOTER CARRIES NO CHAIN.
+  //
+  // It was "next seq", from mem_controller's own counter. Under 5d the block
+  // FILES are named by slablock's PER-STREAM sequence, so that number named a
+  // block in a numbering the filenames no longer use — not merely useless but
+  // actively misleading, a pointer into a namespace that does not exist.
+  //
+  // The eight bytes stay, because removing them is a FORMAT change: they are
+  // what rt_dscan_step subtracts to get a block's payload limit and what the
+  // independent decoder expects. So the field is written as the -1 that always
+  // meant "no continuation from here", and now always means it.
+  //
+  // Nothing ever read the chain — only the slice test asserted it, and that
+  // assertion checks the sentinel now.
+  let footerval = int_sub(Int(0), Int(1))
+
+  let _mc = bchan_send(Text("wp-mc-active"), list_of_2(nptr, nstatus))
+  let abundle = list_append(list_of_3(nptr, pcap, nstatus), footerval)
+  let _ab = bchan_send(Text("wp-active-block"), abundle)
+
+  str_concat(int_to_str(int_add(seq, Int(1))), str_concat(fs, Text("0")))
+}

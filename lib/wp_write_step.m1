@@ -1,0 +1,104 @@
+// wp_write_step — the hot_mem_write pipeline's per-record framing step.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1 landed F1v + S2 here. This used to copy a
+// fixed PCAP-sized chunk of an undelimited byte stream into the active block
+// and stamp a footer. That carried a byte stream and nothing else: the count,
+// order and length of records did not exist in the durable bytes, so nothing
+// downstream could ever recover a record — not a defect in the reader, an
+// absence in the format. It now frames every record with a varint length and
+// routes it to one of two streams.
+//
+// F1v — LEB128 length, then the record bytes. One prefix byte below 128, two
+// below 16384, three below 2097152, so the small structure records that
+// dominate the distribution pay 1 byte instead of a flat 4. Measured on
+// 15-byte records: 1.03 B/record against 4.04 for a fixed u32, and +7.5% total
+// write cost against +31.3% — all of it block count, not block cost.
+//
+// The varint is BUILT AS AN INTEGER and stored with a single 8-byte
+// mem_write_int_raw, little-endian, so its bytes land in order and the payload
+// copy at +vlen overwrites the unused remainder. That is why framing needs no
+// byte-width store and therefore no new bridge primitive.
+//
+// Records accumulate in this thread's own per-stream staging buffers, not
+// directly in a pool block, because the two streams fill concurrently — see
+// wp_seal_stream. Nothing about the immutable plane changes: the payload still
+// moves by one mem_copy_raw straight from the staged input, and no
+// Value::Bytes is ever materialized.
+//
+// AXVERITY_SPAN_RESTORE (2026-08-25): the packing itself moved out to
+// wp_pack_record and wp_span_record, and this fn became the dispatcher. A
+// record that does not fit a block is no longer REFUSED — it spans, as the
+// original write path did before F1v made records atomic. See
+// experiments/continuation/FORMAT-SPAN.md.
+//
+// What is left here is what is common to both paths: decode the length, route
+// by size, encode the varint ONCE (so the encoder lives in one place and the
+// two paths cannot drift), apply the policy limit, and advance the read cursor.
+//
+// Scratch, 8 bytes per slot:
+//    0  iptr    staged input base        40  sbuf   structure staging base
+//    8  ilen    staged input length      48  soff   structure cursor
+//   16  roff    read cursor              56  pbuf   payload staging base
+//   24  thresh  routing threshold        64  poff   payload cursor
+//   32  pcap    payload capacity         72  dry    1 = counting pass
+//   80  blocks  blocks sealed            88  over   oversized records
+//   96  sel     stream wp_seal_stream should seal
+//  104  mrec    max record admitted (policy)
+//  112  foot0   pending footer, structure    120  foot1  pending footer, payload
+//  128  ssrc    span source offset          136  srem   span bytes remaining
+//  144  sfirst  1 = next fragment is first  152  vlen   varint width
+//  160  venc    varint, encoded
+fn wp_write_step(sptr: Int) -> Int {
+  let iptr = mem_read_int_raw(sptr, Int(0))
+  let roff = mem_read_int_raw(sptr, Int(16))
+  let len  = mem_read_int_raw(iptr, roff)
+
+  // Route first: which stream this record belongs to selects every slot below.
+  let th    = mem_read_int_raw(sptr, Int(24))
+  let sel   = if int_gt(len, th) { int_add(Int(1), Int(0)) } else { int_add(Int(0), Int(0)) }
+  let _s    = mem_write_int_raw(sptr, Int(96), sel)
+
+  let vlen = if int_lt(len, Int(128)) {
+               int_add(Int(1), Int(0))
+             } else {
+               if int_lt(len, Int(16384)) { int_add(Int(2), Int(0)) } else { int_add(Int(3), Int(0)) }
+             }
+  let venc = if int_lt(len, Int(128)) {
+               int_add(len, Int(0))
+             } else {
+               if int_lt(len, Int(16384)) {
+                 int_add(int_add(int_mod(len, Int(128)), Int(128)),
+                         int_mul(int_div(len, Int(128)), Int(256)))
+               } else {
+                 int_add(int_add(int_mod(len, Int(128)), Int(128)),
+                   int_add(int_mul(int_add(int_mod(int_div(len, Int(128)), Int(128)), Int(128)), Int(256)),
+                           int_mul(int_div(len, Int(16384)), Int(65536))))
+               }
+             }
+  // vlen is read by BOTH paths — wp_admit_record routes on len + vlen — but
+  // venc is the framed path's alone. A record that spans carries no length
+  // prefix, and above 2097151 the byte2 term here overflows a byte and the
+  // encoding is meaningless; wp_pack_record is the only reader of slot 160 and
+  // is not called for such a record. Left computed rather than made
+  // conditional: an `if` here buys nothing and costs a branch on the hot path.
+  let _v0 = mem_write_int_raw(sptr, Int(152), vlen)
+  let _v1 = mem_write_int_raw(sptr, Int(160), venc)
+
+  // ONE bound left, and it is policy. Spanning answers both structural ones —
+  // a record too big for a block, or too long for the three-byte prefix, is
+  // written unframed across blocks instead of being refused. What remains is
+  // wp_max_record: what this deployment chooses to accept, nothing more.
+  let mrec = mem_read_int_raw(sptr, Int(104))
+  let fits = int_lte(len, mrec)
+  let nc   = if fits { int_add(Int(1), Int(0)) } else { int_add(Int(0), Int(0)) }
+  let ov   = mem_read_int_raw(sptr, Int(88))
+  let _ov  = mem_write_int_raw(sptr, Int(88), int_add(ov, int_sub(Int(1), nc)))
+
+  // Branch to a fn, never to a block containing an `if` — both arms claim pool
+  // blocks and signal seals, so an untaken arm that ran would consume blocks
+  // and announce work that never happened.
+  let _w = if fits { wp_admit_record(sptr) } else { int_add(sptr, Int(0)) }
+
+  let _r = mem_write_int_raw(sptr, Int(16), int_add(roff, int_add(Int(8), len)))
+  int_add(sptr, Int(0))
+}

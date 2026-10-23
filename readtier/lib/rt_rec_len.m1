@@ -1,0 +1,47 @@
+// rt_rec_len — decode the framed length of the record whose varint starts at
+// `off` in `path`. Returns -1 if the frame is malformed.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b. A locator now names a BYTE OFFSET, so a
+// record's length is read from its own frame rather than counted to by a scan.
+// Three bytes cover every length the format can encode below 2097152.
+//
+// THREE-BYTE VARINTS ARE LEGAL and were previously treated as corruption.
+// rt_dscan_step's `bad3` rejected any record whose second byte had the
+// continuation bit, on the reasoning that a 3-byte prefix encodes at least
+// 16384 bytes and a block's payload capacity was 16376. That reasoning died
+// when block capacity became configurable: at 16 MiB a 20,000-byte record is
+// ordinary, is written with a 3-byte prefix by wp_write_step, and would have
+// been counted malformed and silently dropped from the index.
+//
+// The read is in-bounds by construction: every block carries an 8-byte footer,
+// so a record's varint start is always at least 8 bytes from EOF.
+//
+// Decoding is plain int_div/int_mod on the Euclidean contract (CLAUDE.md 8) —
+// no call-site sign correction, deliberately.
+fn rt_rec_len(path: Text, off: Int) -> Int {
+  let res = mem_reserve_raw(Int(16))
+  let p   = tuple_field(res, Int(0))
+  let _z  = mem_write_int_raw(p, Int(0), Int(0))
+  let _w  = mem_write_raw(p, Int(0), fs_read_range(path, off, Int(3)))
+  let w   = mem_read_int_raw(p, Int(0))
+  let _f  = mem_free_raw(p, Int(16))
+
+  let b0  = int_mod(w, Int(256))
+  let b1  = int_mod(int_div(w, Int(256)), Int(256))
+  let b2  = int_mod(int_div(w, Int(65536)), Int(256))
+
+  let one = int_lt(b0, Int(128))
+  let two = int_lt(b1, Int(128))
+  let r   = if one {
+              int_add(b0, Int(0))
+            } else {
+              if two {
+                int_add(int_sub(b0, Int(128)), int_mul(b1, Int(128)))
+              } else {
+                int_add(int_sub(b0, Int(128)),
+                  int_add(int_mul(int_sub(b1, Int(128)), Int(128)),
+                          int_mul(b2, Int(16384))))
+              }
+            }
+  int_add(r, Int(0))
+}

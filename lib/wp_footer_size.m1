@@ -1,0 +1,10 @@
+// wp_footer_size — fixed byte width of the continuation footer mem_controller
+// plans and hot_mem_write stamps onto every sealed block, right after its
+// payload: one 8-byte native-endian Int, written directly via
+// mem_write_int_raw — the next block's ejection sequence number, or -1 as
+// a "no continuation, this is the last block" sentinel. Binary, not text:
+// there is no reason to pay decimal-digit formatting for a single Int when
+// mem_write_int_raw exists.
+fn wp_footer_size(_u: Unit) -> Int {
+  Int(8)
+}

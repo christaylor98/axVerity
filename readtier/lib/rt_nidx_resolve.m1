@@ -1,0 +1,12 @@
+// rt_nidx_resolve — get-or-insert. Returns the existing head id for `name`,
+// minting one only if the name is unknown.
+//
+// This is the shape triple ingestion wants: the same name mentioned twice is
+// the same entity, so it must NOT supersede itself. rt_nidx_insert is the
+// explicit supersession call; this one is idempotent by construction.
+// Effects in the untaken branch do not fire, so no id is burned on a hit.
+fn rt_nidx_resolve(name: Text) -> Int {
+  let cur = rt_nidx_lookup(name)
+  let r   = if int_lt(cur, Int(0)) { rt_nidx_insert(name) } else { int_add(cur, Int(0)) }
+  int_add(r, Int(0))
+}

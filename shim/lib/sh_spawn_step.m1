@@ -1,0 +1,8 @@
+// sh_spawn_step — start connection thread k and move to k+1. State "<lis> TAB <k>".
+fn sh_spawn_step(st: Text) -> Text {
+  let tab = chr(Int(9))
+  let lis = str_before(st, tab)
+  let k   = str_to_int(str_after(st, tab))
+  let _h  = spawn(sh_acceptor, Value(Text)(st))
+  str_concat(lis, str_concat(tab, int_to_str(int_add(k, Int(1)))))
+}

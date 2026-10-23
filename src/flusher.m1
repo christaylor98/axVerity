@@ -1,0 +1,72 @@
+// flusher — one of the slice's 5 --entries threads. Ensures the store
+// directories exist, then drives an exact loop_count that reads each sealed
+// block's bytes out of raw memory, durably writes them to disk, and reclaims
+// the block back onto the free pool, via wp_flusher_step.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1: two stream directories instead of one
+// (S2), both created up front so wp_flusher_step never has to check. They are
+// created here as well as in wp_bid_resolve because the resolver runs on
+// mem_controller's thread and the ordering between the two is not guaranteed —
+// fs_mkdir_p is idempotent and whichever arrives first wins. Both live under
+// .axverity-store/, which remains the single folder every file this write path
+// creates belongs to.
+//
+// The block count arrives on a channel rather than argv: under F1v it is not
+// derivable from the input's size, so hot_mem_write computes it with a
+// counting pass and publishes it.
+//
+// AXVERITY_WATERMARK_ACK_V1: also mints the durable-watermark cell flusher
+// owns and is the sole writer of, and publishes its handle on two one-shot
+// channels: wp-durable-cell (wp_flusher_step's own self-mailbox) and
+// wp-durable-cell-pub (read once by ack_bench at startup). Nothing here
+// touches the write-dispatch hot path.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1: the watermark is seeded first-1, not -1.
+// wp_flusher_step advances it with a plain CAS from seq-1 to seq, which is
+// safe because blocks eject in strict FIFO seq order — but under B1 a run no
+// longer starts at seq 0. On a store whose next id is 36, a cell seeded -1
+// makes the very first CAS expect 35 and find -1, so it fails silently, the
+// watermark never advances, and every wp_wait_durable caller blocks forever.
+// The second lifetime of the round-trip test deadlocked in exactly that way.
+// -1 was never a sentinel here; it was first-1 for the only run that could
+// exist before restarts worked.
+fn flusher_main(argv: TextList) -> Unit {
+  let _m1    = fs_mkdir_p(Text(".axverity-store/structure"))
+  let _m2    = fs_mkdir_p(Text(".axverity-store/payload"))
+  // AXVERITY_EXTENT_WRITE_PATH 5d — one slab per stream, opened HERE because
+  // slablock's handles are thread-local and every slab_append_raw/slab_tick
+  // must run on the thread that opened them. block_bytes is the STAMPED
+  // capacity, never slablock's own 4 MiB default: that default would silently
+  // re-decide a size this project measured and pinned, and would let a store's
+  // blocks be written at a capacity its own stamp does not name.
+  let cap0   = wp_block_capacity(Unit())
+  let hs     = slab_open(Text(".axverity-store/structure"), wp_tick_sla_us(Unit()), cap0)
+  let hp     = slab_open(Text(".axverity-store/payload"),   wp_tick_sla_us(Unit()), cap0)
+  let _hs    = bchan_send(Text("wp-slab-s"), hs)
+  let _hp    = bchan_send(Text("wp-slab-p"), hp)
+
+  let first  = bchan_take(Text("wp-first-seq-pub"))
+  let wmcell = cell_new_raw(int_sub(first, Int(1)))
+  let _wm1   = bchan_send(Text("wp-durable-cell"), wmcell)
+  let _wm2   = bchan_send(Text("wp-durable-cell-pub"), wmcell)
+
+  // AXVERITY_EXTENT_WRITE_PATH — the APPENDED mark, seeded with the watermark
+  // so a run that appends nothing promotes nothing. Under 5d an append and an
+  // fsync are different events; wp_flusher_eject advances this one and only
+  // wp_promote_durable, after a sweep that actually synced, moves it across to
+  // the durable watermark.
+  let apcell = cell_new_raw(int_sub(first, Int(1)))
+  let _ap    = bchan_send(Text("wp-appended-cell"), apcell)
+
+  // AXVERITY_EXTENT_WRITE_PATH step 5a — the run's final durable seq, as a
+  // CELL rather than a channel. ack_bench must read it repeatedly and
+  // non-destructively, including AFTER a wait returns, which a channel message
+  // cannot support: taking it consumes it, and the read that matters is the
+  // one after the wait it was meant to end. Seeded absurdly high so "not
+  // finished yet" needs no separate flag.
+  let acell  = cell_new_raw(Int(1000000000))
+  let _ac    = bchan_send(Text("wp-ack-final-pub"), acell)
+  let _acm   = bchan_send(Text("wp-ack-final-cell"), acell)
+  let _done  = loop_while(Text("0"), wp_flusher_more, wp_flusher_step, Int(1000000000))
+  Unit()
+}

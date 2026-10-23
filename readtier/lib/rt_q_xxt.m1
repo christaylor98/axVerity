@@ -1,0 +1,6 @@
+// rt_q_xxt — target bound. Prefix {T} is served only by rt:C's first key slot;
+// neither rt:A nor rt:B ranks T first. This is the pattern that motivated the
+// third ordering.
+fn rt_q_xxt(t: Text) -> Int {
+  rt_range(Int(2), Int(1), rt_nidx_lookup(t), Int(0), Int(0))
+}

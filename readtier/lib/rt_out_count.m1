@@ -1,0 +1,18 @@
+// rt_out_count — cardinality of the current result set.
+//
+// The read API returns a SET, and it returns it in the named result store
+// rather than as an M1 value. That is unchanged and still deliberate: building
+// an M1 list by repeated list_append names the accumulating list at every call
+// site, and every mention of a list is a deep copy (Value::List is a plain
+// Vec<Value>), so materializing an R-element result would cost O(R^2). The
+// caller reads the set by cardinality plus rt_out_at / rt_out_has, all cheap.
+//
+// PHASE A: the store is a stride-3 u32v, so the cardinality is its own length
+// over three — no set_len, no hash table. THIS IS EXACT ONLY BECAUSE
+// rt_out_emit DEDUPS ON THE WAY IN. An array that admitted duplicates would
+// make this a RECORD count, and the fixture's deliberate double-index is what
+// pins the difference.
+fn rt_out_count(u: Unit) -> Int {
+  let n = u32v_len(Text("rt:out"))
+  int_div(n, Int(3))
+}

@@ -1,0 +1,104 @@
+// rt_driver — the read tier's executable outer (AXVERITY_READ_INDEX_RAM_TIER_V1
+// / W4). Thin by the M1 entry-point contract: argv in, printing out, all real
+// work in the lib/ domain fns it calls.
+//
+// Still its own binary, still linked from readtier/ sources against
+// registries/axverity-readtier.axreg only, and still launched by nobody. What
+// changed in AXVERITY_FORMAT_LAND_AND_WIRE_V1 / P3 is that it no longer needs
+// a tap: the read tier reads the DURABLE STORE, which is a shared artefact
+// rather than a channel. The write path publishes a liveness hint on
+// wp-durable-block, but the structure stream on disk is the source of truth
+// and the rebuild below consumes only that. Nothing in the write path was
+// touched to make this work.
+//
+//   rt-driver test           — correctness, all RAM suites
+//   rt-driver bench <n>      — populate n triples, then time each binding pattern
+//   rt-driver pop <n>        — populate n triples and stop (for the RSS sweep)
+//   rt-driver locality <n>   — cold vs hot key control for the fan-out patterns
+//   rt-driver rebuild        — cold rebuild from .axverity-store/structure
+//   rt-driver cold <n> [lv]  — rebuild, then assert every pattern against the
+//                              corpus arithmetic for a store of n distinct
+//                              triples written lv times (default 1)
+//   rt-driver rid <name>     — cold rebuild, then the durable RID for a name
+//                              and the record it points at
+//   rt-driver coldbench <n>  — rebuild, then time every pattern and the
+//                              point-read path against the rebuilt structures
+//   rt-driver u32v <n>       — U6: ns per u32v call through the M1 glue
+//   rt-driver popidx <n>     — build the DICTIONARY alone (footprint probe)
+//   rt-driver popvec <n>     — build the PROJECTIONS alone (footprint probe)
+//   rt-driver poploop <n>    — the population loop with an empty body (control)
+fn rt_driver_main(argv: TextList) -> Unit {
+  let mode = argv_or(Int(1), Text("test"))
+  let arg2 = argv_or(Int(2), Text("1000"))
+  // arg2 is a NAME for `rid`, not a number: str_to_int is strict now.
+  let n    = if str_eq(mode, Text("rid")) { Int(0) } else { str_to_int(arg2) }
+  let _dn  = map_put(Text("rt:d"), Text("n"), arg2)
+  // How many times the same corpus was written into the store. Only `cold`
+  // reads it; every other mode leaves it at 1.
+  let _dl  = map_put(Text("rt:d"), Text("lifetimes"), argv_or(Int(3), Text("1")))
+
+  let fails = if str_eq(mode, Text("bench")) {
+    rt_bench_all(n)
+  } else {
+    if str_eq(mode, Text("pop")) {
+      rt_pop_only(n)
+    } else {
+      if str_eq(mode, Text("locality")) {
+        rt_bench_locality(n)
+      } else {
+        if str_eq(mode, Text("rebuild")) {
+          let r = rt_rebuild(Unit())
+          int_mul(Int(0), r)
+        } else {
+          if str_eq(mode, Text("cold")) {
+            rt_durable_selftest(Unit())
+          } else {
+            if str_eq(mode, Text("coldbench")) {
+              rt_coldbench(Unit())
+            } else {
+            if str_eq(mode, Text("ordbench")) {
+              rt_ordbench(Unit())
+            } else {
+            if str_eq(mode, Text("u32v")) {
+              rt_bench_u32v(n)
+            } else {
+            if str_eq(mode, Text("popidx")) {
+              rt_pop_idx(n)
+            } else {
+            if str_eq(mode, Text("popvec")) {
+              rt_pop_vec(n)
+            } else {
+            if str_eq(mode, Text("poploop")) {
+              rt_pop_loop(n)
+            } else {
+            if str_eq(mode, Text("rid")) {
+              // A fresh process holds nothing: the durable name-index maps
+              // names to durable RIDs, but the MAP itself lives in RAM and is
+              // reconstructed from the structure stream. Index checkpointing
+              // is deliberately out of scope, so a lookup in a cold process
+              // rebuilds first. That cost is real and is printed, not hidden.
+              let _rb = rt_rebuild(Unit())
+              let rid = rt_rid_of(arg2)
+              let _a  = io_println(str_concat(Text("rid="), int_to_str(rid)))
+              let _b  = io_println(str_concat(Text("len="), int_to_str(rt_read_rid_len(rid))))
+              let _c  = io_println(str_concat(Text("record="), rt_read_rid(rid)))
+              int_mul(Int(0), rid)
+            } else {
+              rt_selftest(Unit())
+            }
+            }
+            }
+            }
+            }
+            }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  let _p = io_println(str_concat(Text("failures="), int_to_str(fails)))
+  let _x = proc_exit(int_min(fails, Int(1)))
+  Unit()
+}

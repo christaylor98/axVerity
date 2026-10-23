@@ -1,0 +1,19 @@
+// rt_vget — one element of projection `store`, selected at runtime.
+//
+// The hot paths do NOT use this. rt_bs_a/_b/_c and rt_sc_a/_b/_c each carry
+// their own Text literal precisely so a probe pays no dispatch, and that is
+// still the right shape for a loop_while step, whose callee is a Fn REFERENCE
+// resolved at emit time (iter.rs:3-7) and cannot be chosen per call.
+//
+// This exists for the ONE place that needs a store-parameterised read outside a
+// loop: rt_hit's equality test, three gets per fully-bound query. The pool
+// builds all three Text literals whichever arm is taken, so this costs three
+// Arc::from per call — acceptable once per query, not once per probe.
+fn rt_vget(store: Int, idx: Int) -> Int {
+  let v = if int_eq(store, Int(0)) {
+            u32v_get(Text("rt:A"), idx)
+          } else {
+            if int_eq(store, Int(1)) { u32v_get(Text("rt:B"), idx) } else { u32v_get(Text("rt:C"), idx) }
+          }
+  int_add(v, Int(0))
+}

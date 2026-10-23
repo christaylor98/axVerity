@@ -1,0 +1,47 @@
+// wp_cfg_get — read one tunable from the store's config directory, falling
+// back to a compiled-in default when it is absent.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 1. Every size in this write path used to be
+// a literal: block capacity was `Int(16384)` in lib/wp_block_capacity.m1 and
+// was INDEPENDENTLY re-hardcoded in tests/run-slice-test.sh,
+// tests/run-crash-test.sh and readtier/lib/rt_rid_stride.m1. Four copies of one
+// number, with nothing checking they agreed. That is what made the block size
+// impossible to sweep: changing it meant editing four files and rebuilding.
+//
+// ONE FILE PER KNOB, holding a single integer:
+//
+//   .axverity-store/config/block_capacity
+//   .axverity-store/config/pool_depth
+//   .axverity-store/config/sync_mode
+//   .axverity-store/config/segment_bytes
+//
+// Chosen over a single key=value file because M1 has no structured parser and
+// hand-rolling one out of str_split/str_before would be a decoder to get wrong;
+// a whole-file str_to_int cannot be. It is also settable from a test harness
+// with `echo 4194304 > ...` and readable with `cat`, which is what a sweep
+// needs. §19's "nothing defaults to one file per key" rule governs INDEXES —
+// an unbounded, data-driven key space — not a fixed handful of tunables.
+//
+// This is NOT the env-var pattern the bridge's own wal_write_seg uses
+// (AXVERITY_WAL_SEG_BYTES): the bridge has no env-read primitive on the M1
+// surface at all, and store configuration belongs beside the store anyway —
+// a knob that must match bytes already on disk should not live in a shell
+// that may not be set the same way on the next run.
+//
+// Absent file => `dflt`. That keeps a store with no config directory working
+// exactly as it did before this change, which is what makes the migration a
+// no-op until someone opts in.
+fn wp_cfg_get(name: Text, dflt: Int) -> Int {
+  let path = str_concat(Text(".axverity-store/config/"), name)
+  let have = fs_file_exists(path)
+  // An empty (or blank) file is an unset knob, the same as an absent one: it
+  // takes the `dflt` arm. str_to_int("") is a fault, so the parse sits in the
+  // arm that only runs when there is text to parse.
+  let raw  = if have { str_trim(fs_read_text(path)) } else { Text("") }
+  let present = bool_and(have, bool_not(str_eq(raw, Text(""))))
+  if present {
+    str_to_int(raw)
+  } else {
+    int_add(dflt, Int(0))
+  }
+}

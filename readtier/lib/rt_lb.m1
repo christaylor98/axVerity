@@ -1,0 +1,21 @@
+// rt_lb — lower bound over the sealed projection `store`: the index of the
+// first record whose key is >= the query key sitting in scratch.
+//
+// This is the one search the whole read API is built from. A prefix RANGE is
+// two of these — lower bound of the prefix, lower bound of the prefix with its
+// last bound component incremented — and end minus start is the cardinality
+// without materializing anything.
+//
+// A NEGATIVE QUERY COMPONENT IS THE UNKNOWN-NAME CASE AND NEEDS NO BRANCH.
+// rt_nidx_lookup returns -1 for a name that was never inserted. Every stored
+// id is >= 0, so both bounds collapse to the same index and the range is
+// empty — which is the right answer, reached by arithmetic rather than by a
+// special case that could be forgotten in one of the eight patterns.
+fn rt_lb(store: Int, p: Int) -> Int {
+  let r = if int_eq(store, Int(0)) {
+            rt_lb_a(p)
+          } else {
+            if int_eq(store, Int(1)) { rt_lb_b(p) } else { rt_lb_c(p) }
+          }
+  int_add(r, Int(0))
+}

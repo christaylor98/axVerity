@@ -1,0 +1,6 @@
+// rt_u32v_s0 — the U6 control step: the loop, the bridge call and the return,
+// with no u32v call in it. Whatever this costs is what a step costs before any
+// crossing into u32v, and it is subtracted from the arms that do cross.
+fn rt_u32v_s0(i: Int) -> Int {
+  int_add(i, Int(1))
+}

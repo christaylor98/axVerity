@@ -1,0 +1,19 @@
+// rt_pop_idx_step — one triple of the synthetic population, DICTIONARY ONLY.
+// Resolves the same three names rt_pop_step does and stops there: no
+// rt_index_triple, so no u32v record is appended.
+//
+// Exists to make the footprint decomposition a MEASUREMENT rather than an
+// arithmetic claim. AXVERITY_READTIER_U32V_REWRITE_V1's stop condition asks
+// whether something other than the text keys is holding memory; answering it by
+// computing sizeof(HashMap entry) would be answering it by assertion.
+fn rt_pop_idx_step(i: Int) -> Int {
+  let n     = str_to_int(map_get(Text("rt:bench"), Text("n")))
+  let tcard = int_max(Int(1), int_div(n, Int(4)))
+  let s     = str_concat(Text("s"), int_to_str(int_div(i, Int(4))))
+  let v     = str_concat(Text("v"), int_to_str(int_mod(i, Int(7))))
+  let t     = str_concat(Text("t"), int_to_str(int_mod(i, tcard)))
+  let _s    = rt_nidx_resolve(s)
+  let _v    = rt_nidx_resolve(v)
+  let ti    = rt_nidx_resolve(t)
+  int_add(ti, Int(0))
+}

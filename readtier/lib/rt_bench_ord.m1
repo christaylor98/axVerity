@@ -1,0 +1,31 @@
+// rt_bench_ord — point-read cost as a function of the record's ORDINAL within
+// its block.
+//
+// F1v frames every record with a length prefix and nothing else: a block
+// carries no directory of where its records start, so reaching record k means
+// decoding records 0..k-1 first. The file's own length is the terminator,
+// which is what lets blocks be variable-length and unpadded — the same
+// property, seen from the read side.
+//
+// This measures the consequence directly. All four reads are in block 0, so
+// locating the file costs the same every time and the only variable is how far
+// into the block the record sits. A flat result would mean point reads are
+// seeks; a rising one means they are scans, and the slope is the price of
+// having no per-block directory.
+//
+// This is the read-side measurement the framing selection explicitly did not
+// have. F2's trailing directory was rejected on write-side numbers with its
+// claim recorded as untested: "one tail seek gives every boundary without
+// touching payload, and P1 did not measure the read side."
+fn rt_bench_ord(ord: Int) -> Int {
+  let reps = Int(200)
+  let _r   = map_put(Text("rt:bench"), Text("rid"), int_to_str(ord))
+  let t0   = now_unix_nanos(Unit())
+  let _f   = foreach(range(Int(0), reps), rt_bench_ord_step)
+  let t1   = now_unix_nanos(Unit())
+  let el   = int_div(int_sub(t1, t0), reps)
+  let _p   = io_println(str_concat(Text("ordinal="),
+               str_concat(int_to_str(ord),
+                 str_concat(Text(" ns_per_read="), int_to_str(el)))))
+  int_add(el, Int(0))
+}

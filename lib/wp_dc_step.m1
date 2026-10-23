@@ -1,0 +1,54 @@
+// wp_dc_step — the disk controller's queue step: take one message, drain any
+// redundant ones behind it, act once.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 3 made this the coordinator its name always
+// implied; step 5a changed what ends it. Messages: [0] tick, [1, <bundle>]
+// write, [2] end-of-stream. The sentinel is forwarded downstream before this
+// stage stops, so the chain unwinds in order rather than each stage having to
+// discover the end for itself.
+//
+// TWO PRODUCERS, ONE QUEUE, ONE CONSUMER. mem_controller posts writes, the
+// tick thread posts ticks, and they never talk to each other. That is also why
+// no non-blocking take is needed: a single blocking take idles cheaply, and
+// the timer guarantees a message at least every SLA period.
+//
+// COALESCING. Redundant ticks collapse — N queued ticks and one tick are the
+// same instruction. Writes are never redundant and each is forwarded on sight,
+// so the coalescing is over INSTRUCTIONS, never over data.
+//
+// Every `if` here is top-level. An `if` nested inside another branch executes
+// its untaken side — see wp_flusher_step's header for the measurement.
+//
+// state = "<done>"; 1 once the sentinel has been seen.
+fn wp_dc_step(state: Text) -> Text {
+  let msg  = bchan_take(Text("wp-dc"))
+  let k    = list_get(msg, Int(0))
+
+  let _f   = if int_eq(k, Int(1)) {
+               bchan_send(Text("wp-flush"), list_get(msg, Int(1)))
+             } else {
+               io_print(Text(""))
+             }
+  // AXVERITY_EXTENT_WRITE_PATH 5d — a tick now REACHES the flusher, where the
+  // slab handles live. It was dispatched and discarded until now.
+  let _t   = if int_eq(k, Int(0)) {
+               bchan_send(Text("wp-flush"), list_of_1(int_sub(Int(0), Int(2))))
+             } else {
+               io_print(Text(""))
+             }
+  let _e   = if int_eq(k, Int(2)) {
+               bchan_send(Text("wp-flush"), list_of_1(int_sub(Int(0), Int(1))))
+             } else {
+               io_print(Text(""))
+             }
+
+  let d    = bchan_len(Text("wp-dc"))
+  let s2   = if int_gt(d, Int(0)) {
+               loop_count(d, k, wp_dc_drain_step)
+             } else {
+               int_add(k, Int(0))
+             }
+
+  let done = if bool_or(int_eq(k, Int(2)), int_eq(s2, Int(2))) { Int(1) } else { Int(0) }
+  str_concat(int_to_str(done), Text(""))
+}

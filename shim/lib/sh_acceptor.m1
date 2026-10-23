@@ -1,0 +1,22 @@
+// sh_acceptor — the spawn callee for one CONNECTION thread (AXVERITY_SHIM_CONCURRENT_CONNS_V1).
+// `a` carries "<listener> TAB <k>". The thread gets its own state block and frame buffer (the same
+// layout shim_main gives the main thread) and then runs the accept loop it always ran: accept a
+// client, serve it to exhaustion (sh_serve_conn), accept the next. The listener is shared by all
+// SH_ACCEPTORS of them (listener handles are process-global; the kernel hands each accept to one).
+fn sh_acceptor(a: Value(Text)) -> Value(Text) {
+  let tab  = chr(Int(9))
+  let st   = ctor_field(a, Int(0))
+  let lis  = str_to_int(str_before(st, tab))
+  let k    = str_to_int(str_after(st, tab))
+  let cap  = Int(8388608)
+  let sptr = tuple_field(mem_reserve_raw(Int(256)), Int(0))
+  let buf  = tuple_field(mem_reserve_raw(int_add(cap, Int(64))), Int(0))
+  let _s0  = mem_write_int_raw(sptr, Int(0),   lis)
+  let _s1  = mem_write_int_raw(sptr, Int(8),   Int(0))
+  let _s2  = mem_write_int_raw(sptr, Int(16),  buf)
+  let _s3  = mem_write_int_raw(sptr, Int(24),  cap)
+  let _s5  = mem_write_int_raw(sptr, Int(112), Int(0))
+  let _s6  = mem_write_int_raw(sptr, Int(200), k)
+  let _l   = loop_while(sptr, sh_accept_more, sh_accept_step, Int(1000000000))
+  Value(Text)(Text(""))
+}

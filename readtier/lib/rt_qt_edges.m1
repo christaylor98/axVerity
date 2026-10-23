@@ -1,0 +1,41 @@
+// rt_qt_edges — the degenerate cases: an empty tier, a tier holding exactly
+// one triple, and names that were never inserted. Resets state, so it runs
+// after the fixture suites.
+fn rt_qt_edges(u: Unit) -> Int {
+  // --- empty ---------------------------------------------------------------
+  let _r0 = rt_reset_all(Unit())
+  let e1 = rt_expect_int(Text("e/empty ???"),  rt_q_xxx(Unit()),                    Int(0))
+  let e2 = rt_expect_int(Text("e/empty S??"),  rt_q_sxx(Text("a")),                 Int(0))
+  let e3 = rt_expect_int(Text("e/empty ?V?"),  rt_q_xvx(Text("likes")),             Int(0))
+  let e4 = rt_expect_int(Text("e/empty ??T"),  rt_q_xxt(Text("b")),                 Int(0))
+  let e5 = rt_expect_int(Text("e/empty SVT"),  rt_q_svt(Text("a"), Text("likes"), Text("b")), Int(0))
+
+  // --- exactly one triple --------------------------------------------------
+  let _i1 = rt_insert_names(Text("a"), Text("likes"), Text("b"))
+  let one = rt_key3(Text("0"), Text("1"), Text("2"))
+  let s1 = rt_expect_int(Text("s/single ???"),      rt_q_xxx(Unit()),                Int(1))
+  let s2 = rt_expect_int(Text("s/single S??"),      rt_q_sxx(Text("a")),             Int(1))
+  let s3 = rt_expect_int(Text("s/single ?V?"),      rt_q_xvx(Text("likes")),         Int(1))
+  let s4 = rt_expect_int(Text("s/single ??T"),      rt_q_xxt(Text("b")),             Int(1))
+  let s5 = rt_expect_int(Text("s/single SV?"),      rt_q_svx(Text("a"), Text("likes")), Int(1))
+  let s6 = rt_expect_int(Text("s/single ?VT"),      rt_q_xvt(Text("likes"), Text("b")), Int(1))
+  let s7 = rt_expect_int(Text("s/single S?T"),      rt_q_sxt(Text("a"), Text("b")),  Int(1))
+  let s8 = rt_expect_int(Text("s/single SVT"),      rt_q_svt(Text("a"), Text("likes"), Text("b")), Int(1))
+  let s9 = rt_expect_text(Text("s/single is the triple"), rt_out_at(Int(0)),         one)
+
+  // --- names that were never inserted --------------------------------------
+  let u1 = rt_expect_int(Text("u/unknown source"), rt_q_sxx(Text("zzz")),            Int(0))
+  let u2 = rt_expect_int(Text("u/unknown verb"),   rt_q_xvx(Text("zzz")),            Int(0))
+  let u3 = rt_expect_int(Text("u/unknown target"), rt_q_xxt(Text("zzz")),            Int(0))
+  let u4 = rt_expect_int(Text("u/unknown in SV?"), rt_q_svx(Text("a"), Text("zzz")), Int(0))
+  let u5 = rt_expect_int(Text("u/unknown in S?T"), rt_q_sxt(Text("zzz"), Text("b")), Int(0))
+  let u6 = rt_expect_int(Text("u/unknown in SVT"), rt_q_svt(Text("a"), Text("likes"), Text("zzz")), Int(0))
+  let u7 = rt_expect_int(Text("u/lookup did not mint"), rt_nidx_lookup(Text("zzz")), int_sub(Int(0), Int(1)))
+
+  let g1 = int_add(int_add(e1, e2), int_add(e3, e4))
+  let g2 = int_add(int_add(e5, s1), int_add(s2, s3))
+  let g3 = int_add(int_add(s4, s5), int_add(s6, s7))
+  let g4 = int_add(int_add(s8, s9), int_add(u1, u2))
+  let g5 = int_add(int_add(u3, u4), int_add(u5, u6))
+  int_add(int_add(int_add(g1, g2), int_add(g3, g4)), int_add(g5, u7))
+}

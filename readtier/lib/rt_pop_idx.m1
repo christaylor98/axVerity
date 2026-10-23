@@ -1,0 +1,9 @@
+// rt_pop_idx — build the DICTIONARY alone at population n and stop, so the
+// sweep script's RSS probe can price it separately from the projections.
+fn rt_pop_idx(n: Int) -> Int {
+  let _r = rt_reset_all(Unit())
+  let _n = map_put(Text("rt:bench"), Text("n"), int_to_str(n))
+  let _f = foreach(range(Int(0), n), rt_pop_idx_step)
+  let _e = io_println(str_concat(Text("entities="), int_to_str(rt_nidx_distinct(Unit()))))
+  int_add(Int(0), Int(0))
+}

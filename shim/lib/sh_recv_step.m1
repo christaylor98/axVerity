@@ -1,0 +1,50 @@
+// sh_recv_step — one tcp_read into the frame buffer, then try to resolve the
+// frame's length prefix.
+//
+// tcp_read returns whatever one read syscall gave (net.rs caps at 64 KiB) and
+// reports a gone peer, a reset and a read timeout all as zero bytes. Zero bytes
+// therefore means "this connection is finished", which is precisely the serve
+// loop's exit condition — it is not an error and is not reported as one.
+//
+// The oversize arm is the shim's only admission limit and it is structural, not
+// policy: the frame buffer is a fixed reservation made once at startup, so a
+// declared length past it cannot be stored at all. It is failed as
+// out-of-contract (plen = -2) rather than by growing the buffer, because
+// growing on a client-declared length is how a length prefix becomes a remote
+// allocation primitive.
+fn sh_recv_step(sptr: Int) -> Int {
+  let conn   = mem_read_int_raw(sptr, Int(8))
+  let buf    = mem_read_int_raw(sptr, Int(16))
+  let cap    = mem_read_int_raw(sptr, Int(24))
+  let filled = mem_read_int_raw(sptr, Int(32))
+
+  let b   = tcp_read(conn)
+  let n   = bytes_len(b)
+  let _e  = if int_eq(n, Int(0)) { mem_write_int_raw(sptr, Int(56), Int(1)) }
+            else                 { mem_write_raw(buf, filled, b) }
+  let nf  = int_add(filled, n)
+  let _f  = mem_write_int_raw(sptr, Int(32), nf)
+
+  // Resolve the length prefix as soon as enough of it has arrived.
+  let total = mem_read_int_raw(sptr, Int(64))
+  let peek  = int_min(nf, Int(5))
+  let hdr   = if int_lt(total, Int(0)) { mem_read_raw(buf, Int(0), peek) }
+              else                     { mem_read_raw(buf, Int(0), Int(0)) }
+  let w     = if int_lt(total, Int(0)) { sh_vi_width(hdr, Int(0)) } else { Int(0) }
+  let plen  = if int_gt(w, Int(0)) { sh_vi_val(hdr, Int(0), w) } else { int_sub(Int(0), Int(1)) }
+  let tot   = int_add(w, plen)
+  let fits  = int_lte(tot, cap)
+
+  let _h = if int_gt(w, Int(0)) { mem_write_int_raw(sptr, Int(40), w) }
+           else                 { io_print(Text("")) }
+  let _p = if int_gt(w, Int(0)) { mem_write_int_raw(sptr, Int(48), plen) }
+           else                 { io_print(Text("")) }
+  let _t = if bool_and(int_gt(w, Int(0)), fits) { mem_write_int_raw(sptr, Int(64), tot) }
+           else                                 { io_print(Text("")) }
+  // Oversize: stop reading and mark the frame unservable.
+  let _o = if bool_and(int_gt(w, Int(0)), bool_not(fits)) { mem_write_int_raw(sptr, Int(48), int_sub(Int(0), Int(2))) }
+           else                                           { io_print(Text("")) }
+  let _o2 = if bool_and(int_gt(w, Int(0)), bool_not(fits)) { mem_write_int_raw(sptr, Int(56), Int(1)) }
+            else                                           { io_print(Text("")) }
+  int_add(sptr, Int(0))
+}

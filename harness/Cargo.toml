@@ -1,0 +1,20 @@
+[package]
+name = "bakeoff"
+version = "0.1.0"
+edition = "2021"
+
+# AXVERITY_GRAPH_INDEX_ORDERING_BAKEOFF_V1 measurement instrument.
+# Zero dependencies on purpose: the only external symbols are libc's
+# clock_gettime and malloc_trim, declared directly. Nothing here is
+# imported by, or imports from, the M1 write path (lib/*.m1, src/*.m1).
+
+[[bin]]
+name = "bakeoff"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = "thin"
+codegen-units = 1
+panic = "abort"

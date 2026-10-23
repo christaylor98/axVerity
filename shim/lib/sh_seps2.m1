@@ -1,0 +1,38 @@
+// sh_seps2 — does this record carry EXACTLY two field separators?
+//
+// AXVERITY_SILENT_LOSS_FIX_V1 P9. A durable structure record is
+// `s<US>v<US>t` with US = 0x1F and NO escaping, so the separator count is not
+// a style question: it is the only thing that says where the three fields
+// begin and end. A record carrying a third separator is not a triple whose
+// target happens to contain 0x1F — there is no encoding in which it could be.
+// rt_dindex_rec parses it as s = "aaa", v = "bbb", t = "ccc<US>ddd", which then
+// comes back over the wire as a FOUR-field row, and a client doing
+// `s, v, t = row.split(US)` raises. Appendix A.5 declares 0x1F reserved and
+// unescaped; this is the fn that makes the store stop producing what the
+// contract says a consumer must never receive.
+//
+// WHY IT IS REFUSED AT ADMISSION AND NOT ONLY AT INDEX TIME. Dropping such a
+// record at rebuild alone would leave ADMIT answering `ok admitted=N` for a
+// record that no query will ever return — which is ACCEPTED_MEANS_QUERYABLE
+// violated, in the intent that exists to close exactly that. The read tier
+// rejects it too (rt_dindex_rec.m1), because a store may be written by
+// build/wp-slice directly with no shim in the path; the two checks are the
+// same rule at the two doors, not one check duplicated.
+//
+// IT REUSES THE FRAME WALK. sh_fr_step already knows this record's offset and
+// length, so this is called from inside that single pass — there is no second
+// walk over the body. A non-UTF-8 record fails here, and that is not an extra
+// rule: a body whose bytes are not text has no field structure to count, and
+// bytes_to_text would panic on it (bytes_io.rs:217) rather than answer.
+fn sh_seps2(ptr: Int, off: Int, len: Int) -> Bool {
+  let b   = mem_read_raw(ptr, off, len)
+  let utf = bytes_is_utf8(b)
+  let txt = if utf { bytes_to_text(b) } else { Text("") }
+  let us  = chr(Int(31))
+  let r1  = str_after(txt, us)
+  let r2  = str_after(r1,  us)
+  let i1  = int_gte(str_index_of(txt, us), Int(0))
+  let i2  = int_gte(str_index_of(r1,  us), Int(0))
+  let i3  = int_lt(str_index_of(r2,  us),  Int(0))
+  bool_and(utf, bool_and(i1, bool_and(i2, i3)))
+}

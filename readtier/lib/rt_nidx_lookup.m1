@@ -1,0 +1,11 @@
+// rt_nidx_lookup — the head (newest) internal id for `name`, or -1 if the
+// name has never been inserted. Pure bucket-head read, one map probe.
+//
+// Supersession: this deliberately returns the HEAD, so a name that has been
+// re-inserted resolves to its newest id and the older ids stay reachable
+// only by walking rt_nidx_prev.
+fn rt_nidx_lookup(name: Text) -> Int {
+  let h = map_get(Text("rt:nidx:head"), name)
+  let r = if str_eq(h, Text("")) { int_sub(Int(0), Int(1)) } else { str_to_int(h) }
+  int_add(r, Int(0))
+}

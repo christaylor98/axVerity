@@ -1,0 +1,27 @@
+// rt_rid_put — record the durable RID for a name in the durable name-index.
+//
+// The map keeps the SMALLEST RID a name was ever seen at, not the newest. That
+// is a deliberate choice and the reason is determinism, not preference:
+// fs_list_dir returns a directory in whatever order the filesystem hands it
+// back, so a rebuild visits blocks in an arbitrary order. "First one wins"
+// would make the index depend on that order and two rebuilds of the same store
+// could disagree. Minimum is order-independent, so the index is a pure
+// function of the durable bytes — which is the only way a cold rebuild can be
+// checked against a known-correct expectation at all.
+//
+// It is also the more useful answer: the smallest RID is the earliest durable
+// record that mentions the name, which is where that entity enters the store.
+//
+// This is separate from rt:nidx, and deliberately so. rt:nidx maps a name to a
+// dense INTERNAL id with no physical meaning, minted per process and used only
+// to key the projections. rt:ridx maps a name to a durable RECORD address that
+// survives restart. Collapsing them would make the projections depend on
+// physical layout.
+fn rt_rid_put(name: Text, rid: Int) -> Int {
+  let cur = rt_rid_of(name)
+  let win = bool_or(int_lt(cur, Int(0)), int_lt(rid, cur))
+  let _p  = if win { map_put(Text("rt:ridx"), name, int_to_str(rid)) }
+            else   { io_print(Text("")) }
+  let r   = if win { int_add(rid, Int(0)) } else { int_add(cur, Int(0)) }
+  int_add(r, Int(0))
+}

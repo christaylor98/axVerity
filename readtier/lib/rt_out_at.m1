@@ -1,0 +1,21 @@
+// rt_out_at — the i-th member of the result set, as a canonical S,V,T key.
+//
+// PHASE A CHANGED THE ORDER THIS WALKS IN, and the change is the point of T3.
+// The slot index used to be ASSIGNMENT order — the order the range scan reached
+// each distinct triple in, which was the source projection's own key order and
+// therefore differed between rt:A, rt:B and rt:C. It is now SORTED order:
+// rt_range seals rt:out with u32v_sort3(0,1,2) before returning, so the ordinal
+// sequence is ascending canonical (s, v, t) whichever projection answered.
+//
+// RENDERED ON DEMAND. The three ids live as u32 and become decimal Text only
+// here, once per element the caller actually asks for. The old path rendered
+// every result at emit time whether or not anything ever read it back — the
+// count-only callers (rt_bench_pattern, sh_query's head frame) paid a full
+// key construction per result to learn a number the array's length now gives.
+fn rt_out_at(i: Int) -> Text {
+  let b = int_mul(i, Int(3))
+  let s = u32v_get(Text("rt:out"), b)
+  let v = u32v_get(Text("rt:out"), int_add(b, Int(1)))
+  let t = u32v_get(Text("rt:out"), int_add(b, Int(2)))
+  rt_key3(int_to_str(s), int_to_str(v), int_to_str(t))
+}

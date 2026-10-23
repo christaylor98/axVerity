@@ -1,0 +1,17 @@
+// rt_vcount — how many RECORDS a projection holds. The arrays are stride 3, so
+// this is the element count divided by three, and it is the exclusive upper
+// bound every binary search starts from.
+//
+// Each store is asked for its own length rather than reading rt:A's and
+// assuming the other two agree. They always do — rt_index_triple pushes to all
+// three or to none — but "always" is an invariant of a fn that could change,
+// and a search bounded by the wrong array's length would read a neighbour's
+// record rather than fail.
+fn rt_vcount(store: Int) -> Int {
+  let n = if int_eq(store, Int(0)) {
+            u32v_len(Text("rt:A"))
+          } else {
+            if int_eq(store, Int(1)) { u32v_len(Text("rt:B")) } else { u32v_len(Text("rt:C")) }
+          }
+  int_div(n, Int(3))
+}

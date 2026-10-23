@@ -1,0 +1,14 @@
+// wp_dc_more — loop_while condition for the disk controller: keep draining
+// until the end-of-stream sentinel has been seen.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. It used to bound on "n writes
+// forwarded", which was already better than counting messages — a tick is not
+// a block — but it still rested on a PREDICTED n from the dry counting pass,
+// and a tick can seal a partial block that the prediction never saw. The
+// sentinel cannot drift from reality because it is posted after the last seal
+// actually happens.
+//
+// state = "<done>".
+fn wp_dc_more(state: Text) -> Bool {
+  int_eq(str_to_int(state), Int(0))
+}

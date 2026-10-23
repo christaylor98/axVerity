@@ -1,0 +1,83 @@
+// sh_query — the QUERY verb. A transliteration of §3.1, plus the freshness gate.
+//
+// Body is `mask US s US v US t`, US = 0x1F, the same separator the store's own
+// records use. Unbound positions are empty and rt_query ignores them per the
+// mask, so the wire carries all four fields always and the mask alone decides
+// which are read — the alternative, omitting unbound fields, makes the frame's
+// shape depend on its own contents.
+//
+// Parsing is str_before/str_after rather than str_split because str_after
+// returns "" when the delimiter is absent (CLAUDE.md §2), which is exactly the
+// right answer for a truncated body: the field reads as unbound instead of
+// shifting every later field left by one.
+//
+// The response is a count frame then that many row frames. The count is sent
+// FIRST and comes from rt_out_count, not from a tally of what was sent, so a
+// client can size its read before the rows arrive and can tell a short stream
+// from a short answer.
+//
+// ── THE FRESHNESS GATE (AXVERITY_W2_ADMIT_HANDLE_V1, G3) ────────────────────
+// UNKNOWN_MUST_NOT_LOOK_BENIGN. §4.6 makes a reader's view "as of their last
+// rebuild" and §7 makes REBUILD-before-read the consumer's obligation. A
+// consumer that forgets it used to be answered `ok` with `0` rows — a benign,
+// non-erroring, confidently wrong answer, indistinguishable on the wire from a
+// store that genuinely holds nothing. That is the shape this intent exists to
+// remove: the tier did not know the answer and said something reassuring.
+//
+// Slot 160 is the projection's freshness. 1 means the RAM tier does not reflect
+// the durable store; 0 means it does. It is set to 1 at process start (nothing
+// has been rebuilt in this lifetime — a restart against a written store is
+// exactly the case a per-connection gate would miss), set to 1 by every
+// successful ADMIT, and cleared only by a successful REBUILD.
+//
+// THE GATE IS PER-OP, NOT PER-CONNECTION, and that was decided by construction
+// rather than taste (T6). A.10 rule 1 tells every well-formed client to connect,
+// call and close — so any state a handshake could establish is discarded before
+// the next call, and a handshake gate is either re-performed on every
+// connection (a per-op gate carrying an extra round trip) or remembered across
+// connections (a per-op gate carrying a misleading name). A per-op gate has no
+// bypass: the check sits between the request and the tier, on the only path
+// there is.
+//
+// Refusal is out-of-contract, not transient, by §5.8's own test: retrying the
+// same QUERY without a REBUILD in between will not help. The message names the
+// verb that clears it.
+fn sh_query(sptr: Int, body: Text) -> Int {
+  let conn = mem_read_int_raw(sptr, Int(8))
+  let us   = chr(Int(31))
+  let f0   = str_before(body, us)
+  let r1   = str_after(body, us)
+  let f1   = str_before(r1, us)
+  let r2   = str_after(r1, us)
+  let f2   = str_before(r2, us)
+  let f3   = str_after(r2, us)
+  // REQ-13/REQ-7: a mask that is not one digit 0..7 is a client defect: refuse
+  // with status 1 (a non-numeric mask used to crash str_to_int and drop the connection).
+  let okm  = if int_eq(str_len(f0), Int(1)) {
+               int_gte(str_index_of(Text("01234567"), f0), Int(0))
+             } else { int_eq(Int(0), Int(1)) }
+  let mask = if okm { str_to_int(f0) } else { Int(0) }
+
+  let stale = mem_read_int_raw(sptr, Int(160))
+  let fresh = int_eq(stale, Int(0))
+
+  let _st = if fresh {
+              io_print(Text(""))
+            } else {
+              sh_reply(conn, Int(1),
+                Text("STALE the RAM projection does not reflect the durable store — REBUILD before reading (§4.6); answering this query would report rows that are not the store's"))
+            }
+
+  let nok = if okm { int_eq(Int(0), Int(1)) } else { int_eq(Int(0), Int(0)) }
+  let bad = if fresh { nok } else { int_eq(Int(0), Int(1)) }
+  let _b = if bad { sh_reply(conn, Int(1), Text("mask must be a single digit 0..7")) } else { io_print(Text("")) }
+  let go = if bad { int_eq(Int(0), Int(1)) } else { fresh }
+
+  let _q = if go { rt_query(mask, f1, f2, f3) } else { Int(0) }
+  let n  = if go { rt_out_count(Unit()) } else { Int(0) }
+  let _h = if go { sh_reply(conn, Int(0), int_to_str(n)) }
+           else     { io_print(Text("")) }
+  let _z = mem_write_int_raw(sptr, Int(72), Int(0))
+  let _l = loop_count(n, sptr, sh_query_step)
+  int_add(n, Int(0))
+}

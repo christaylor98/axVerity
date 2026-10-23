@@ -1,0 +1,51 @@
+// sh_frames — how many record frames the region [off, off+len) actually holds,
+// or -1 if it is not a cleanly framed record stream.
+//
+// WHY THIS EXISTS. ADMIT carries a count and a body, and until this fn the
+// count was taken on trust and handed to the writer as argv[2]. A count one too
+// LOW was silent data loss acknowledged as success: hot_mem_write drives
+// loop_count with it (:82, :107), so it read two records out of a three-record
+// body, wrote two, exited 0, and the client was told `ok admitted=2`. Nothing
+// was malformed, so no reader could tell a record was missing. Measured in P4
+// before this guard existed.
+//
+// COUNTING IS TRANSPORT'S JOB, not the store's. §5.2 property 5 forbids the
+// shim from reordering, coalescing or splitting a call — counting is none of
+// those, it decides nothing about the records, and the precedent is already set
+// by the UTF-8 guard, which validates a body before letting it through. What
+// this refuses is a body and a header that disagree with each other, which is a
+// framing fault and has never been anyone else's to catch.
+//
+// EXACT FIT IS REQUIRED. Reaching the end of the body mid-frame is not a
+// record stream, so a trailing partial frame is -1 rather than a short count.
+//
+// Slot 152 is this scan's too, and it is an OUT parameter rather than a return
+// value: this fn answers "how many frames", and "which record is not a triple"
+// is a second fact that cannot be folded into one Int without making -1 mean
+// two different things. sh_admit reads it directly. It is zeroed here, not by
+// the caller, so the answer can never be a stale one from a previous ADMIT on
+// the same connection.
+//
+// Scratch slots 120/128/136/144 are this scan's own — they are the ones the
+// retired M1 UTF-8 validator used, and they do not overlap the frame reader
+// (32-64), the query cursor (72) or the connection flag (88). Slot 96 was an
+// ADMIT sequence counter, needed when the temp file was admit-<seq>.tmp; the
+// path is fixed now, so the counter was incremented and never read and has
+// been deleted rather than left as a slot nobody can account for.
+fn sh_frames(sptr: Int, off: Int, len: Int) -> Int {
+  let _z = mem_write_int_raw(sptr, Int(152), Int(0))
+  let _a = mem_write_int_raw(sptr, Int(120), off)
+  let _b = mem_write_int_raw(sptr, Int(128), int_add(off, len))
+  let _c = mem_write_int_raw(sptr, Int(136), Int(0))
+  let _d = mem_write_int_raw(sptr, Int(144), Int(1))
+  let _l = loop_while(sptr, sh_fr_more, sh_fr_step, Int(1000000000))
+
+  let ok  = mem_read_int_raw(sptr, Int(144))
+  let cur = mem_read_int_raw(sptr, Int(120))
+  let lim = mem_read_int_raw(sptr, Int(128))
+  let n   = mem_read_int_raw(sptr, Int(136))
+
+  let good = bool_and(int_eq(ok, Int(1)), int_eq(cur, lim))
+  let r    = if good { int_add(n, Int(0)) } else { int_sub(Int(0), Int(1)) }
+  int_add(r, Int(0))
+}

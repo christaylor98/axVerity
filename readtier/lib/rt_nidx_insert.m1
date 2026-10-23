@@ -1,0 +1,41 @@
+// rt_nidx_insert — mint a NEW internal id for `name` and make it the head of
+// that name's chain, retaining the previous head behind it. This is the
+// supersession shape: an insert never overwrites, it pushes.
+//
+// RAM only. The dictionary is PROCESS-LOCAL: it is built at cold start, dies
+// at exit, is never durable and never on the wire. IDENTITY_IS_A_NAME_NOT_A_
+// HASH is untouched by that — the STORE still stores names; an id minted here
+// is a handle, not an identity.
+//
+// The structure is two Text maps and one u32 array:
+//   rt:nidx:head  name -> newest id        (the bucket head)
+//   rt:nidx:name  id   -> name             (reverse map)
+//   rt:nidx:prev  [id] -> superseded id + 1 (0 terminates the chain)
+//
+// THE COUNTER IS THE ARRAY'S OWN LENGTH. Every mint pushes exactly one prev
+// entry, so the next free id is u32v_len(rt:nidx:prev) and the "rt:nidx:meta"
+// map that used to hold it is gone — with it, an int_to_str and a str_to_int
+// off the per-name path.
+//
+// PREV IS AN ARRAY BECAUSE ITS KEY IS DENSE. Ids are minted 0, 1, 2, ... with
+// no gaps, so a map from id to id was a Text-keyed hash over a perfect index:
+// it rendered the id to decimal, hashed it, and stored a heap String key plus
+// an Arc<str> value to hold four bytes of information. It is one u32 slot now.
+// The +1 is what lets 0 mean "no previous" without a sentinel id.
+//
+// map_get returns "" for an absent key (the store convention), so a name with
+// no prior head is distinguishable from a head of id 0 without a sentinel.
+fn rt_nidx_insert(name: Text) -> Int {
+  let id  = u32v_len(Text("rt:nidx:prev"))
+  let old = map_get(Text("rt:nidx:head"), name)
+  let pv  = if str_eq(old, Text("")) {
+              int_add(Int(0), Int(0))
+            } else {
+              int_add(str_to_int(old), Int(1))
+            }
+  let _p  = u32v_push(Text("rt:nidx:prev"), pv)
+  let ids = int_to_str(id)
+  let _h  = map_put(Text("rt:nidx:head"), name, ids)
+  let _n  = map_put(Text("rt:nidx:name"), ids, name)
+  int_add(id, Int(0))
+}

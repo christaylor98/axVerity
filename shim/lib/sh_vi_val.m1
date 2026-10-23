@@ -1,0 +1,22 @@
+// sh_vi_val — the value of the `w`-group LEB128 varint at `off`.
+//
+// Each group contributes its low 7 bits at its own power of 128. int_mod is
+// Euclidean (CLAUDE.md §8), so `int_mod(byte, 128)` is a mask and is correct
+// for every byte value — including the ones with the top bit set, which is
+// every continuation byte here. The old call-site correction
+// `int_mod(int_add(int_mod(v,m),m),m)` is deliberately absent.
+//
+// Groups past `w` are guarded by the branch rather than masked arithmetically,
+// so a 1-group varint never touches a byte the frame may not own yet.
+fn sh_vi_val(b: Bytes, off: Int, w: Int) -> Int {
+  let g0 = int_mod(bytes_get(b, off), Int(128))
+  let g1 = if int_gt(w, Int(1)) { int_mod(bytes_get(b, int_add(off, Int(1))), Int(128)) } else { Int(0) }
+  let g2 = if int_gt(w, Int(2)) { int_mod(bytes_get(b, int_add(off, Int(2))), Int(128)) } else { Int(0) }
+  let g3 = if int_gt(w, Int(3)) { int_mod(bytes_get(b, int_add(off, Int(3))), Int(128)) } else { Int(0) }
+  let g4 = if int_gt(w, Int(4)) { int_mod(bytes_get(b, int_add(off, Int(4))), Int(128)) } else { Int(0) }
+  let a1 = int_add(g0, int_mul(g1, Int(128)))
+  let a2 = int_add(a1, int_mul(g2, Int(16384)))
+  let a3 = int_add(a2, int_mul(g3, Int(2097152)))
+  let a4 = int_add(a3, int_mul(g4, Int(268435456)))
+  int_add(a4, Int(0))
+}

@@ -1,0 +1,7 @@
+// rt_nidx_name_of — reverse map: the name an internal id was minted for, or
+// "" for an id that was never minted. Needed by the traversal API, which
+// carries ids and renders names only at the boundary.
+fn rt_nidx_name_of(id: Int) -> Text {
+  let n = map_get(Text("rt:nidx:name"), int_to_str(id))
+  str_concat(n, Text(""))
+}

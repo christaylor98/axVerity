@@ -1,0 +1,15 @@
+// rt_out_reset — empty the result set. Every query starts here.
+//
+// PHASE A (AXVERITY_READTIER_READPATH_LATENCY_V1): the result set is a u32v at
+// stride 3, not a Text set plus an integer-slotted Text map. So emptying it is
+// one u32v_new rather than a set_clear plus a map_clear, and nothing here
+// hashes a string.
+//
+// u32v_new drops the buffer rather than retaining capacity (u32v.rs), which is
+// the same reason rt_proj_reset gives: a query's reallocation count becomes a
+// function of that query's own answer size and not of whatever the previous
+// query in this process happened to return.
+fn rt_out_reset(u: Unit) -> Unit {
+  let _v = u32v_new(Text("rt:out"))
+  Unit()
+}

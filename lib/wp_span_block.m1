@@ -1,0 +1,46 @@
+// NOT a NESTED_IF_WORKAROUND site, deliberately untagged: this is
+// loop_count's callback and M1 requires a loop body to be a named fn, so it
+// would exist with or without the nested-`if` defect. Tagging it would put it
+// in a revert scope that is meant to be grep-able (CLAUDE.md section 2) and
+// invite someone to inline a loop body back into its caller.
+//
+// wp_span_block — write ONE full unframed fragment block of a spanning record.
+//
+// AXVERITY_SPAN_RESTORE. The fragment fills the entire payload and carries NO
+// length prefix: that is what keeps the 2097151 framing ceiling off a spanning
+// record's body, and what lets one block hold exactly one fragment with nothing
+// wasted. The block's own footer says what it is, so a reader folding a
+// directory in arbitrary order can classify it without reading its neighbours.
+//
+// Footer flags (see experiments/continuation/FORMAT-SPAN.md):
+//   2  FIRST fragment  — the record starts at offset 0 of this block
+//   3  MIDDLE fragment — continues in and continues out
+//
+// Scratch: 32 pcap, 40/56 staging base, 48/64 cursor, 96 stream selector,
+// 112+sel*8 pending footer, 128 span source offset, 136 span remaining,
+// 144 first-block flag.
+fn wp_span_block(sptr: Int) -> Int {
+  let iptr  = mem_read_int_raw(sptr, Int(0))
+  let sel   = mem_read_int_raw(sptr, Int(96))
+  let bslot = int_add(Int(40), int_mul(sel, Int(16)))
+  let cslot = int_add(Int(48), int_mul(sel, Int(16)))
+  let fslot = int_add(Int(112), int_mul(sel, Int(8)))
+  let pcap  = mem_read_int_raw(sptr, Int(32))
+  let bptr  = mem_read_int_raw(sptr, bslot)
+  let src   = mem_read_int_raw(sptr, Int(128))
+  let rem   = mem_read_int_raw(sptr, Int(136))
+  let first = mem_read_int_raw(sptr, Int(144))
+
+  let _c    = mem_copy_raw(bptr, Int(0), iptr, src, pcap)
+  let _cur  = mem_write_int_raw(sptr, cslot, pcap)
+
+  // flags*2^32 + taillen, taillen 0 because the whole payload is body.
+  let flags = int_sub(Int(3), first)
+  let _f    = mem_write_int_raw(sptr, fslot, int_mul(flags, Int(4294967296)))
+  let _s    = wp_seal_stream(sptr)
+
+  let _ns   = mem_write_int_raw(sptr, Int(128), int_add(src, pcap))
+  let _nr   = mem_write_int_raw(sptr, Int(136), int_sub(rem, pcap))
+  let _nf   = mem_write_int_raw(sptr, Int(144), Int(0))
+  int_add(sptr, Int(0))
+}

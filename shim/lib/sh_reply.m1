@@ -1,0 +1,15 @@
+// sh_reply — one status-tagged text frame.
+//
+// Payload is one status byte then a UTF-8 body. The status classes are the
+// contract's, and they are separate on purpose (§5.8): 0 ok, 1 out-of-contract
+// (the client is wrong, retrying will not help and must not be attempted),
+// 2 transient (connection-level, retry is legitimate). Collapsing 1 into 2 is
+// how a broken client turns a refusal into a retry loop.
+//
+// chr() of 0..127 is one UTF-8 byte, so text_to_bytes of the tag is exactly one
+// byte wide.
+fn sh_reply(conn: Int, status: Int, body: Text) -> Unit {
+  let tag = text_to_bytes(chr(status))
+  let _s  = sh_send(conn, bytes_concat(tag, text_to_bytes(body)))
+  Unit()
+}

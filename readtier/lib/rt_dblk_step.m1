@@ -1,0 +1,35 @@
+// rt_dblk_step — foreach's callback over the structure stream's directory
+// listing: one durable block per call.
+//
+// foreach, not loop_count over an index, because the listing is a list and
+// every M1 expression that NAMES a list emits a clone of it — a directory of
+// 100k blocks folded the indexed way is O(N^2) (369 s versus 252 ms at 100k in
+// the list-fold finding). This is one of the two sites the finding predicted
+// would actually bite: "the name-index and adjacency projections fold over
+// large lists, and must use foreach from the first line."
+//
+// The scratch pointer arrives by take-and-put-back self-mailbox because
+// foreach's callback receives only the element. That is the same idiom
+// wp-mc-active, wp-durable-cell and the write path's own B1 resolver use.
+//
+// Entries that are not durable blocks are skipped, not decoded. A leftover
+// `.tmp.<pid>.<n>` is a partially written block: scanning it would at best
+// fail to parse and at worst index a truncated tail as records that were never
+// durable. Effects in the untaken branch do not fire, so a rejected entry
+// costs one parse and no read.
+fn rt_dblk_step(name: Text) -> Int {
+  let sptr = bchan_take(Text("rt-dscan"))
+  let _p   = bchan_send(Text("rt-dscan"), sptr)
+  let id   = rt_dbid_parse(name)
+  let ok   = int_gte(id, Int(0))
+  let _sk  = if ok { mem_write_int_raw(sptr, Int(24), id) } else { io_print(Text("")) }
+  let _pp  = if ok {
+               map_put(Text("rt:d"), Text("path"),
+                 str_concat(map_get(Text("rt:d"), Text("dir")), str_concat(Text("/"), name)))
+             } else { io_print(Text("")) }
+  let _sc  = if ok { rt_dblk_scan(sptr) } else { int_add(Int(0), Int(0)) }
+  let nsk  = mem_read_int_raw(sptr, Int(104))
+  let _ns  = if ok { io_print(Text("")) }
+             else  { mem_write_int_raw(sptr, Int(104), int_add(nsk, Int(1))) }
+  int_add(id, Int(0))
+}

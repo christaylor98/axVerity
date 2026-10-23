@@ -1,0 +1,42 @@
+// rt_read_rid — the record a locator names, as Text, or "" if that block is
+// not durable.
+//
+// The text form is only meaningful for a record that IS text — structure
+// records are, payload blobs are arbitrary bytes and bytes_to_text panics on
+// invalid UTF-8. rt_read_rid_len answers for any record and is the
+// format-level truth about a record's size.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b: two preads and a seek, where this used
+// to stage the whole block and scan to an ordinal. On a full 16 MiB block that
+// scan cost ~160 ms for an average record and ~295 ms for the last; the direct
+// read is 676 ns.
+//
+// IT READS THE FOOTER BEFORE IT TRUSTS THE OFFSET. A spanning record's locator
+// is the ordinary shape — (seq, stream, offset 0) — because the record begins
+// at offset 0 of its first block. But that block has NO LENGTH PREFIX there:
+// its payload is raw body bytes. Decoding one anyway is silent, not loud, and
+// it was: a 10 MB record indexed under three names read back as `len=100` and
+// 100 bytes of its own body, because the first byte of the subject happened to
+// be 0x64. The footer says whether offset 0 begins an unframed record, so this
+// asks it — one 8-byte pread added to a framed read, against a wrong answer
+// that nothing downstream could detect.
+fn rt_read_rid(rid: Int) -> Text {
+  let stride = rt_rid_stride(Unit())
+  let off    = int_mod(rid, stride)
+  let t      = int_div(rid, stride)
+  let stream = int_mod(t, Int(2))
+  let blk    = int_div(t, Int(2))
+  let path   = rt_dblk_path(stream, blk)
+
+  let have   = int_gt(str_len(path), Int(0))
+  let foot   = if have { rt_span_footer(path, stride) } else { int_sub(Int(0), Int(1)) }
+  let norm   = int_eq(foot, int_sub(Int(0), Int(1)))
+  let flags  = if norm { Int(0) } else { int_div(foot, Int(4294967296)) }
+  // Only a locator at offset 0 of a block that BEGINS a record can be one:
+  // flags 2 (first fragment) or flags 4 (whole unframed record).
+  let span   = bool_and(bool_and(have, int_eq(off, Int(0))),
+                 bool_or(int_eq(flags, Int(2)), int_eq(flags, Int(4))))
+
+  let out = if span { rt_span_text(stream, blk) } else { rt_read_frame(path, off) }
+  str_concat(out, Text(""))
+}

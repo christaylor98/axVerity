@@ -1,0 +1,60 @@
+// NESTED_IF_WORKAROUND (dispatch): calls wp_mc_assign rather than inlining it.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_mem_controller_step — mem_controller's per-event handler, and the ONLY
+// place in this whole slice that talks to disk_controller. Never touches a
+// block's content — only its own status-cell bookkeeping. Every group of
+// related values travels as ONE list-valued message on ONE channel.
+//
+// 1. Waits for the seal signal, which now CARRIES the stream and the sealed
+//    length. Both used to be derivable here — there was one stream, and a
+//    block was always seq * payload capacity of an undelimited input. Under
+//    F1v a block ends wherever the next record would not fit, so its length is
+//    a fact only the packer holds; under S2 the stream decides which directory
+//    the flusher writes it to. Deriving either downstream is exactly the kind
+//    of second source of truth that can disagree after a crash.
+// 2. Recalls, via its own self-mailbox, which block address + status cell it
+//    most recently assigned, and forwards
+//    [ptr, len, seq, status, stream] to disk_controller. This is the sole
+//    synchronization point in the pipeline: nothing is forwarded for ejection
+//    before the seal signal confirms the write actually finished.
+// 3. Takes the next free (ptr, status) pair off the pool — blocking here until
+//    flusher has reclaimed one, which is the real backpressure a pool of
+//    exactly 3 forces — marks it 0(not in use)->1(writing), plans ITS footer,
+//    and hands the bundle to hot_mem_write as the next block to write into.
+//
+// The footer records a SEQUENCE NUMBER, never a raw memory pointer: a pointer
+// from mem_reserve_raw is meaningful only within one process lifetime, and
+// with a pool of 3 physical blocks the same pointer is reused across many
+// unrelated blocks. -1 is the "no continuation, this is the last block"
+// sentinel. Sequence numbers are now ABSOLUTE — B1 starts this run wherever
+// the durable store left off — so the plan compares against the run's last id
+// rather than against a count from zero. Under S2 that id is global across
+// both streams, which is what keeps the union dense and lets a structure
+// record name a payload block by a single integer.
+// AXVERITY_EXTENT_WRITE_PATH step 5a: state is "<seq> FS <done>" and the bound
+// is an end-of-stream sentinel rather than a predicted block count. The
+// sentinel (stream = -1) cannot be confused with a seal: a real one carries a
+// stream selector of 0 or 1. Both `if`s below are top-level, and the live half
+// is a fn CALL rather than an inline block — an `if` nested inside a branch
+// executes its untaken side (see wp_flusher_step).
+fn wp_mem_controller_step(state: Text) -> Text {
+  let fs     = chr(Int(28))
+  let seq    = str_to_int(str_before(state, fs))
+
+  let sig    = bchan_take(Text("wp-seal-done"))
+  let stream = list_get(sig, Int(0))
+  let len    = list_get(sig, Int(1))
+
+  let eos    = int_lt(stream, Int(0))
+  let _fwd   = if eos {
+                 bchan_send(Text("wp-dc"), list_of_1(Int(2)))
+               } else {
+                 io_print(Text(""))
+               }
+  let out    = if eos {
+                 str_concat(int_to_str(seq), str_concat(fs, Text("1")))
+               } else {
+                 wp_mc_assign(state, stream, len)
+               }
+  str_concat(out, Text(""))
+}

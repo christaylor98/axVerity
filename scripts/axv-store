@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# axv-store — create, inspect and serve an axVerity store.
+#
+# WHY THIS EXISTS. A store is selected by a process's WORKING DIRECTORY: both
+# tiers resolve `.axverity-store/...` relative to cwd and neither accepts a path
+# (shim/src/shim.m1's header, contract §10 item 3). So "a new store" is really
+# "a new directory, plus a shim standing in it", and every consumer so far has
+# rebuilt that launch line by hand — wire-harness/shimctl.py is the third copy.
+#
+# `mkdir` already produces a working store: the shim mkdir -p's
+# `.axverity-store` and the writer creates the stream directories on its first
+# admission. Verified. So this script is NOT a required step, and it is not
+# doing anything the tiers cannot do without it. What it adds is the three
+# things that are irreversible or invisible if you skip them:
+#
+#   1. THE KNOBS MUST BE SET BEFORE THE FIRST WRITE. `block_capacity` is
+#      stamped on the first admission and is then FIXED FOR THE LIFE OF THE
+#      STORE (lib/wp_cap_stamp.m1) — a RID decodes against the stamp, so
+#      changing it later silently re-resolves every id already handed out. A
+#      bare `mkdir` therefore silently accepts the compiled-in default, and
+#      discovering you wanted another one is a migration.
+#   2. AN EXISTING STORE IS DETECTED, NOT JOINED. `init` over a store whose
+#      stamp disagrees with the requested capacity refuses here, with the
+#      reason, rather than letting the writer FATAL at the first admission or —
+#      on an empty store — silently re-stamp.
+#   3. THE LAUNCH LINE, ONCE. Port selection, waiting for the listener, and the
+#      "did it exit instead of binding" case.
+#
+# NO DEFAULTS ARE DUPLICATED HERE. `block_capacity`, `max_record`, `pool_depth`
+# and `sla_us` have exactly one home each (lib/wp_*.m1, through wp_cfg_get), and
+# a knob you do not pass is left ABSENT from config/ so that home stays the only
+# one. That is the same rule the config directory itself was created to enforce
+# — one value, not four copies that can drift.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+SHIM=${AXV_SHIM:-$HERE/shim/bin/axshim}
+WRITER=${AXV_WRITER:-$HERE/build/wp-slice}
+DEFAULT_PORT=7717           # matches shim/src/shim.m1's own argv default
+
+die()  { echo "axv-store: $*" >&2; exit 1; }
+note() { echo "axv-store: $*" >&2; }
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  axv-store init   <dir> [--block-capacity N] [--max-record N]
+                         [--pool-depth N] [--sla-us N]
+  axv-store serve  <dir> [--port N] [--detach]
+  axv-store stop   <dir>
+  axv-store status <dir>
+
+  <dir> is the store's own directory. It holds exactly one store, in
+  <dir>/.axverity-store. One store per directory, one server per store.
+
+  A knob you do not pass is left unset, so the writer's own default applies.
+  --block-capacity is the one that cannot be changed after the first write.
+
+env:
+  AXV_SHIM     path to shim/bin/axshim     (default: alongside this script)
+  AXV_WRITER   path to build/wp-slice      (default: alongside this script)
+USAGE
+  exit 2
+}
+
+# ── helpers ────────────────────────────────────────────────────────────────
+posint() {   # posint <name> <value>
+  case "$2" in
+    ''|*[!0-9]*) die "--$1 wants a positive integer, got '$2'" ;;
+  esac
+  [ "$2" -gt 0 ] || die "--$1 wants a positive integer, got '$2'"
+}
+
+need_binaries() {
+  [ -x "$SHIM" ]   || die "$SHIM not built or not executable — run shim/build-shim.sh"
+  [ -x "$WRITER" ] || die "$WRITER not built or not executable — run scripts/build.sh"
+}
+
+store_of() { echo "$1/.axverity-store"; }
+
+# Blocks live one per stream directory, named block-<seq>.bin.
+blocks_in() { ls "$1" 2>/dev/null | grep -c '^block-[0-9][0-9]*\.bin$' || true; }
+
+# The stamp is store state (what the bytes on disk MEAN); config is intent.
+stamp_of() {
+  local f="$1/block_capacity"
+  [ -f "$f" ] && tr -d '[:space:]' < "$f" || true
+}
+
+cfg_of() {
+  local f="$1/config/$2"
+  [ -f "$f" ] && tr -d '[:space:]' < "$f" || true
+}
+
+pidfile_of() { echo "$1/shim.pid"; }
+portfile_of() { echo "$1/shim.port"; }
+
+running_pid() {   # running_pid <storedir>; echoes pid if a live shim is recorded
+  local pf; pf=$(pidfile_of "$1")
+  [ -f "$pf" ] || return 0
+  local pid; pid=$(tr -d '[:space:]' < "$pf")
+  [ -n "$pid" ] || return 0
+  kill -0 "$pid" 2>/dev/null && echo "$pid" || true
+}
+
+# ── init ───────────────────────────────────────────────────────────────────
+cmd_init() {
+  [ $# -ge 1 ] || usage
+  local dir=$1; shift
+  local cap='' maxrec='' pool='' sla=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --block-capacity) cap=${2:-};    posint block-capacity "$cap";    shift 2 ;;
+      --max-record)     maxrec=${2:-}; posint max-record "$maxrec";     shift 2 ;;
+      --pool-depth)     pool=${2:-};   posint pool-depth "$pool";       shift 2 ;;
+      --sla-us)         sla=${2:-};    posint sla-us "$sla";            shift 2 ;;
+      -h|--help) usage ;;
+      *) die "unknown option '$1' for init" ;;
+    esac
+  done
+
+  mkdir -p "$dir"
+  dir=$(cd "$dir" && pwd)
+  local sd; sd=$(store_of "$dir")
+
+  # THE ONE IRREVERSIBLE CHECK. The stamp records the capacity this store's
+  # blocks were actually written at. Every RID decodes against it, so a store
+  # that already holds blocks cannot be re-capacitied — not by this script and
+  # not by editing config/ by hand.
+  local st; st=$(stamp_of "$sd")
+  local nblocks=$(( $(blocks_in "$sd/structure") + $(blocks_in "$sd/payload") ))
+  if [ -n "$st" ] && [ -n "$cap" ] && [ "$st" != "$cap" ]; then
+    if [ "$nblocks" -gt 0 ]; then
+      die "$dir is an existing store stamped block_capacity=$st and holds $nblocks block(s).
+       Capacity is fixed for the life of a store — every RID already handed out
+       decodes against the stamp. Requested $cap. Init a new directory instead."
+    fi
+    note "$dir was stamped block_capacity=$st but holds no blocks; re-stamping to $cap is safe and the writer will do it."
+  fi
+
+  mkdir -p "$sd/config"
+  local wrote=0
+  set_knob() {   # set_knob <name> <value>
+    [ -n "$2" ] || return 0
+    local prev; prev=$(cfg_of "$sd" "$1")
+    printf '%s\n' "$2" > "$sd/config/$1"
+    if [ -n "$prev" ] && [ "$prev" != "$2" ]; then
+      note "config/$1: $prev -> $2"
+    fi
+    wrote=$((wrote + 1))
+  }
+  set_knob block_capacity "$cap"
+  set_knob max_record     "$maxrec"
+  set_knob pool_depth     "$pool"
+  set_knob sla_us         "$sla"
+
+  # max_record has no structural bound any more (spanning restored it), but it
+  # does have a memory cost a caller should hear about once: the rebuild holds
+  # one whole record in RAM while reassembling a spanning one.
+  if [ -n "$maxrec" ] && [ "$maxrec" -gt 2097151 ]; then
+    note "max_record=$maxrec exceeds the framing ceiling, so records above 2097151 bytes will SPAN blocks. That is supported and indexed, but the rebuild holds one whole record in RAM."
+  fi
+
+  if [ -n "$st" ] || [ "$nblocks" -gt 0 ]; then
+    echo "existing store: $dir  (stamped block_capacity=${st:-unstamped}, $nblocks block(s))"
+  else
+    echo "new store: $dir"
+  fi
+  if [ "$wrote" -eq 0 ]; then
+    echo "  config: none set — the writer's own defaults apply and will be stamped on first write"
+  fi
+  cmd_status "$dir" | sed -n '2,$p'
+  echo
+  echo "serve it:   $0 serve $dir --port $DEFAULT_PORT"
+  echo "client:     $HERE/wire-harness/axwire.py   (reference client — adopt it, do not reimplement)"
+}
+
+# ── status ─────────────────────────────────────────────────────────────────
+cmd_status() {
+  [ $# -eq 1 ] || usage
+  local dir=$1
+  [ -d "$dir" ] || die "$dir does not exist"
+  dir=$(cd "$dir" && pwd)
+  local sd; sd=$(store_of "$dir")
+  echo "store: $dir"
+  if [ ! -d "$sd" ]; then
+    echo "  (no .axverity-store — nothing has been created here yet)"
+    return 0
+  fi
+  local st; st=$(stamp_of "$sd")
+  echo "  stamped block_capacity: ${st:-<unstamped: nothing written yet>}"
+  local any=0
+  for k in block_capacity max_record pool_depth sla_us; do
+    local v; v=$(cfg_of "$sd" "$k")
+    if [ -n "$v" ]; then echo "  config/$k: $v"; any=1; fi
+  done
+  if [ "$any" -eq 0 ]; then echo "  config: none set (writer defaults apply)"; fi
+  local s p; s=$(blocks_in "$sd/structure"); p=$(blocks_in "$sd/payload")
+  echo "  blocks: structure=$s payload=$p   (ids are dense PER STREAM; a handle without its stream name is meaningless)"
+  local pid; pid=$(running_pid "$sd")
+  if [ -n "$pid" ]; then
+    echo "  shim: running pid=$pid port=$(cat "$(portfile_of "$sd")" 2>/dev/null || echo '?')"
+  else
+    echo "  shim: not running"
+  fi
+}
+
+# ── serve ──────────────────────────────────────────────────────────────────
+cmd_serve() {
+  [ $# -ge 1 ] || usage
+  local dir=$1; shift
+  local port=$DEFAULT_PORT detach=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --port) port=${2:-}; posint port "$port"; shift 2 ;;
+      --detach) detach=1; shift ;;
+      -h|--help) usage ;;
+      *) die "unknown option '$1' for serve" ;;
+    esac
+  done
+  need_binaries
+  [ -d "$dir" ] || die "$dir does not exist — run: $0 init $dir"
+  dir=$(cd "$dir" && pwd)
+  local sd; sd=$(store_of "$dir")
+  mkdir -p "$sd"
+
+  # ONE SERVER PER STORE IS THE CONSUMER'S OBLIGATION, not the wire's — there
+  # is no lease (contract v2.0 §5.6, deleted). Two shims over one store are two
+  # unguarded writers. This catches the common accident; it is not a lock.
+  local pid; pid=$(running_pid "$sd")
+  if [ -n "$pid" ]; then die "a shim is already serving $dir (pid=$pid, port=$(cat "$(portfile_of "$sd")" 2>/dev/null || echo '?')). One server per store. Stop it first: $0 stop $dir"
+  fi
+
+  # SOMEBODY ELSE'S LISTENER IS NOT OUR SERVER. Without this, a serve onto a
+  # port already in use spawned a shim that died on bind, then "succeeded"
+  # because the readiness probe connected to the OTHER process — and the caller
+  # got a handle to a different store. Silent, and it is the accident this whole
+  # script exists to prevent, so it is checked rather than raced.
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    exec 3<&- 3>&-
+    die "port $port is already in use by another process. Pick another with --port."
+  fi
+
+  if [ "$detach" -eq 0 ]; then
+    echo "axv-store: serving $dir on port $port (Ctrl-C to stop)" >&2
+    exec "$SHIM" "$dir" "$port" "$WRITER"
+  fi
+
+  local log="$sd/shim.log"
+  nohup "$SHIM" "$dir" "$port" "$WRITER" >"$log" 2>&1 &
+  local child=$!
+  printf '%s\n' "$child" > "$(pidfile_of "$sd")"
+  printf '%s\n' "$port"  > "$(portfile_of "$sd")"
+
+  # Wait for the LISTENER, not for the process: a shim that exits because the
+  # port is taken still leaves a pid that was briefly alive.
+  local t
+  for t in $(seq 1 150); do
+    if ! kill -0 "$child" 2>/dev/null; then
+      rm -f "$(pidfile_of "$sd")" "$(portfile_of "$sd")"
+      note "shim exited before listening; log follows:"; sed 's/^/  /' "$log" >&2
+      exit 1
+    fi
+    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+      exec 3<&- 3>&-
+      echo "serving $dir on 127.0.0.1:$port  pid=$child  log=$log"
+      return 0
+    fi
+    sleep 0.1
+  done
+  die "shim did not listen on port $port within 15s (pid=$child, log=$log)"
+}
+
+# ── stop ───────────────────────────────────────────────────────────────────
+cmd_stop() {
+  [ $# -eq 1 ] || usage
+  local dir=$1
+  [ -d "$dir" ] || die "$dir does not exist"
+  dir=$(cd "$dir" && pwd)
+  local sd; sd=$(store_of "$dir")
+  local pid; pid=$(running_pid "$sd")
+  if [ -z "$pid" ]; then
+    rm -f "$(pidfile_of "$sd")" "$(portfile_of "$sd")"
+    echo "no shim running for $dir"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  local t
+  for t in $(seq 1 30); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || true; sleep 0.2; fi
+  rm -f "$(pidfile_of "$sd")" "$(portfile_of "$sd")"
+  echo "stopped shim pid=$pid for $dir"
+}
+
+# ── dispatch ───────────────────────────────────────────────────────────────
+[ $# -ge 1 ] || usage
+sub=$1; shift
+case $sub in
+  init)   cmd_init   "$@" ;;
+  serve)  cmd_serve  "$@" ;;
+  stop)   cmd_stop   "$@" ;;
+  status) cmd_status "$@" ;;
+  -h|--help|help) usage ;;
+  *) die "unknown subcommand '$sub'" ;;
+esac

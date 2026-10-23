@@ -1,0 +1,16 @@
+// tick — the SLA timer thread. One of the slice's --entries threads, and the
+// only unbounded one.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 2. It owns no state, holds no block, and
+// touches no file. Every wp_tick_sla_us microseconds it posts [0] onto wp-dc
+// and sleeps again. The disk controller decides what, if anything, that means.
+//
+// It blocks once at startup taking the run cell from wp-run-cell-pub, which
+// also orders it behind mem_controller's own startup (B1's id resolve and the
+// pool mint) — the same ordering trick wp-first-seq-pub already plays for
+// flusher and ack_bench.
+fn tick_main(argv: TextList) -> Unit {
+  let cell = bchan_take(Text("wp-run-cell-pub"))
+  let _fin = loop_while(int_to_str(cell), wp_tick_more, wp_tick_step, Int(1000000000))
+  Unit()
+}

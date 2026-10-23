@@ -1,0 +1,11 @@
+// rt_lb_b — run the lower-bound search over rt:B to convergence and return
+// the record index it settled on.
+//
+// Three of these rather than one taking a store id, because loop_while's step
+// is a Fn REFERENCE resolved at emit time (iter.rs:3-7) and cannot be selected
+// at runtime. rt_lb is the dispatcher; this is one arm of it.
+fn rt_lb_b(p: Int) -> Int {
+  let _l = loop_while(p, rt_bs_more, rt_bs_b, Int(64))
+  let r  = mem_read_int_raw(p, Int(0))
+  int_add(r, Int(0))
+}

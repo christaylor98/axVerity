@@ -1,0 +1,57 @@
+// wp_block_capacity — capacity in bytes of each block in the hotframe pool.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1 raised this from 64 to 16384. The old value
+// was deliberately tiny so that a modest input forced several full-pool
+// rotations in one short run (THREE_BLOCKS_MEAN_EJECTION_IN_RUN). That reason
+// still holds and is still met — ejection is observed by feeding more input,
+// not by shrinking the block.
+//
+// CAP_EXCEEDS_LARGEST_RECORD is a hard limit: no framed record may span a
+// block, so a record larger than the capacity cannot be stored at all and is
+// counted and rejected loudly (lib/wp_write_step.m1, src/hot_mem_write.m1).
+// Raising the capacity therefore also raises the largest storable record —
+// they are the same number, not two.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 1: 16384 is now the DEFAULT, not the value.
+// It was never chosen as an I/O unit — the comment it replaced justified it
+// purely as "4x the largest record the format work was measured at". The
+// recorded design's flush unit is 4 MiB (AXVERITY_HOTWRITE_REALISTIC_WORKLOAD_
+// SPIKE_V1), and the block-size x concurrency sweep found no single best value
+// at all: the optimum moves with shard count AND with hardware, in directions
+// that are not even consistent between them. So this is a knob, and the right
+// value is whatever a sweep against the target installation says it is.
+//
+// AXVERITY_SIZE_THRESHOLD_RECONCILE (2026-08-25): the default is 4 MiB, and it
+// was swept on this write path rather than inherited. 256 MiB of 4 KiB records,
+// three runs, median (experiments/threshold/e2-capacity.sh, CLAUDE.md section 9):
+//
+//     16 KiB    2.5 MB/s    4.678 ms/block    75.1% fill
+//      1 MiB  104.8 MB/s    9.469 ms/block    99.3% fill
+//      4 MiB  177.2 MB/s   22.228 ms/block    98.5% fill
+//     16 MiB  217.7 MB/s   69.165 ms/block    94.2% fill
+//
+// 71x, and the mechanism is that fsyncs per block are a FLAT 3.00 at every
+// capacity, so total fsyncs = payload / capacity. A 16 KiB block bought nothing
+// and paid a fixed durability tax 256 times more often than a 4 MiB one.
+// ms/block = 5.14 + 4.02*MiB, so fixed cost stops dominating at ~1.28 MiB.
+//
+// 16 MiB is faster still and is NOT chosen: seal latency triples to 69 ms, fill
+// falls to 94.2%, and each pool slot costs 16 MiB of resident memory.
+//
+// THE CAPACITY IS NOT A CEILING ON ANYTHING. The line this replaced said
+// "raising the capacity therefore also raises the largest storable record —
+// they are the same number, not two." Neither half survives. Since
+// AXVERITY_SPAN_RESTORE a record too large for a block is written UNFRAMED
+// across consecutive blocks of its stream, so the capacity bounds no record at
+// all — it is a throughput and packing decision, nothing more. The only limit
+// left is wp_max_record, which is policy.
+//
+// The 16384 literals in wp_cap_stamp's orphan check and rt_rid_stride's
+// fallback are the LEGACY value for pre-stamp stores, NOT copies of this
+// default. They must stay 16384 whatever this becomes — a store written before
+// the stamp existed decodes at 16384 and nothing here changes that.
+//
+// Override: .axverity-store/config/block_capacity
+fn wp_block_capacity(_u: Unit) -> Int {
+  wp_cfg_get(Text("block_capacity"), Int(4194304))
+}

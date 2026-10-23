@@ -1,0 +1,7 @@
+// sh_serve_more — loop_while condition for one connection's request stream.
+// Slot 88 is cleared by sh_serve_step the moment the peer stops talking or
+// sends something unservable.
+fn sh_serve_more(sptr: Int) -> Bool {
+  let live = mem_read_int_raw(sptr, Int(88))
+  int_eq(live, Int(1))
+}

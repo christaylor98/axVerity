@@ -1,0 +1,10 @@
+// sh_byte_at — one byte out of raw memory, as an Int in 0..255.
+//
+// M1 has no byte-width load; the one-byte mem_read_raw + bytes_get pair is the
+// narrowest read available and, unlike mem_read_int_raw, it cannot pull in the
+// seven bytes after the one being asked about. That distinction is the whole
+// of CLAUDE.md §8: a decoder positioned at a boundary must not read past it.
+fn sh_byte_at(ptr: Int, off: Int) -> Int {
+  let b = mem_read_raw(ptr, off, Int(1))
+  int_add(bytes_get(b, Int(0)), Int(0))
+}

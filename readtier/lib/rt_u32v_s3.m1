@@ -1,0 +1,20 @@
+// rt_u32v_s3 — three u32v_get per step, sharing ONE pool literal. Against
+// rt_u32v_s1 the difference is two crossings and no literal, so half of it is
+// the marginal per-get cost with the name allocation already paid — which is
+// the shape a binary-search probe and a range scan both have.
+//
+// All three gets read the same index on purpose. U6 asks what a crossing costs,
+// not what a cache miss costs; holding the address constant keeps the memory
+// hierarchy out of the number. The name lookup is a HashMap probe either way
+// and does not care about the index.
+//
+// u32v_get is declared `effect fullIo` / `deterministic false`, so the three
+// identical calls are NOT hash-consed into one — the trap wp_count_step exists
+// for cannot fire here. The extern "C-unwind" boundary also stops rustc from
+// eliding a call whose result is unused.
+fn rt_u32v_s3(i: Int) -> Int {
+  let a = u32v_get(Text("rt:u"), i)
+  let b = u32v_get(Text("rt:u"), i)
+  let c = u32v_get(Text("rt:u"), i)
+  int_add(a, int_add(b, c))
+}

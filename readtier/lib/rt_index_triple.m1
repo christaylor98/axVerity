@@ -1,0 +1,42 @@
+// rt_index_triple — W2's single writer, on u32v
+// (AXVERITY_READTIER_U32V_REWRITE_V1). One triple of internal ids is APPENDED
+// to all three projections, which together form a minimum prefix cover of the
+// eight binding patterns.
+//
+// THREE_ORDERINGS_MINIMUM_COVER, unchanged. What changed is what a projection
+// IS. It used to be a 3-level trie of Text-keyed nodes, reached by gluing
+// decimal renderings of ids into hash keys; it is now ONE u32 array at stride
+// 3, and the ordering is not baked into the layout at all:
+//
+//   rt:A  sorted (0,1,2) -> S,V,T   prefix-serves {}, {S},    {S,V},  {S,V,T}
+//   rt:B  sorted (1,2,0) -> V,T,S   prefix-serves {}, {V},    {V,T},  {S,V,T}
+//   rt:C  sorted (2,0,1) -> T,S,V   prefix-serves {}, {T},    {T,S},  {S,V,T}
+//
+// EVERY PROJECTION STORES THE SAME RECORD: (s, v, t), in that slot order, in
+// all three. THE KEY ORDER IS THE ROTATION and it lives only in the argument
+// rt_seal hands u32v_sort3. That is why nothing downstream has to rotate a
+// tuple back into canonical form — the old rt_emit existed solely to undo a
+// rotation the storage had imposed, and there is no longer one to undo.
+//
+// APPEND_ONLY_PLUS_SEALED_SORT: this fn only pushes. It never sorts, never
+// dedups and never touches an element already written. rt_seal does the one
+// in-place reordering, lazily, at the first read after a write.
+//
+// SINGLE_WRITER: this fn is the only thing that ever writes rt:A, rt:B or
+// rt:C. u32v is thread-local by construction (u32v.rs), so a second writer
+// cannot be configured into existence — there is no lock here because there is
+// no contention that could arise.
+//
+// No int_to_str anywhere. An id crosses as an Int and lands as a u32.
+fn rt_index_triple(s: Int, v: Int, t: Int) -> Int {
+  let _a0 = u32v_push(Text("rt:A"), s)
+  let _a1 = u32v_push(Text("rt:A"), v)
+  let _a2 = u32v_push(Text("rt:A"), t)
+  let _b0 = u32v_push(Text("rt:B"), s)
+  let _b1 = u32v_push(Text("rt:B"), v)
+  let _b2 = u32v_push(Text("rt:B"), t)
+  let _c0 = u32v_push(Text("rt:C"), s)
+  let _c1 = u32v_push(Text("rt:C"), v)
+  let _c2 = u32v_push(Text("rt:C"), t)
+  int_add(Int(1), Int(0))
+}

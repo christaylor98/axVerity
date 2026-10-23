@@ -1,0 +1,23 @@
+// wp_tick_sla_us — the SLA tick period, in MICROSECONDS.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 2. The write path has exactly one seal
+// trigger today: a record that will not fit the active block. That is fine
+// while blocks are 16 KiB and fill in ~47 records, and it is not fine at
+// 16 MiB, where a block holds ~48,000 records and a slow producer's data sits
+// unsealed until the run ends.
+//
+// So there are two triggers, with complementary duty cycles:
+//
+//   at full flight   blocks fill faster than the period, block-full dominates,
+//                    and the tick mostly finds work already queued — near-free
+//   in slow periods  block-full never fires, and the tick is the ONLY thing
+//                    that makes data durable
+//
+// Microseconds, not milliseconds, because that is the unit slab_open takes
+// (bridge slablock.rs, `sla_us`) and converting at one end of a boundary is
+// how the two drift apart. Default 200000 = 200 ms.
+//
+// Override: .axverity-store/config/sla_us
+fn wp_tick_sla_us(_u: Unit) -> Int {
+  wp_cfg_get(Text("sla_us"), Int(200000))
+}

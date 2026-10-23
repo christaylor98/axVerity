@@ -1,0 +1,24 @@
+// wp_pool_depth — number of physical blocks in the hotframe pool.
+//
+// Fixed at 3 since AXVERITY_WRITE_PATH_SLICE_V1, chosen so that ejection is
+// provably observable in one short run (THREE_BLOCKS_MEAN_EJECTION_IN_RUN):
+// with three blocks a modest input forces a full rotation, so the free-pool
+// backpressure path is exercised rather than merely present.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 1 makes it a knob because it is a THROUGHPUT
+// parameter that was chosen for TESTABILITY. The pool is what stands between
+// the packer and a single flusher thread: the packer blocks in bchan_take on
+// wp-free-pool until the flusher has reclaimed a block, so at depth 3 the
+// writer can be at most 2 blocks ahead of the disk. At 16 KB blocks that is a
+// 48 KB buffer; at a 4 MiB block it is 12 MB. Whether depth or capacity binds
+// first is exactly what the step-6 sweep is for, and it cannot be swept while
+// one of the two is structural.
+//
+// Minimum 3 is enforced at the mint site (src/mem_controller.m1), not here —
+// a depth below 3 would stop exercising rotation, which is the property the
+// original choice was protecting.
+//
+// Override: .axverity-store/config/pool_depth
+fn wp_pool_depth(_u: Unit) -> Int {
+  wp_cfg_get(Text("pool_depth"), Int(3))
+}

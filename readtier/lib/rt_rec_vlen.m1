@@ -1,0 +1,23 @@
+// rt_rec_vlen — width in bytes (1, 2 or 3) of the varint length prefix at
+// `off` in `path`, so a caller can skip past it to the payload.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b. Separate from rt_rec_len because an M1
+// fn returns one value and packing two into one integer would be a decoder to
+// get wrong. It costs a second 3-byte pread — ~676 ns against the ~160 ms the
+// ordinal scan it replaces used to cost on a full 16 MiB block.
+fn rt_rec_vlen(path: Text, off: Int) -> Int {
+  let res = mem_reserve_raw(Int(16))
+  let p   = tuple_field(res, Int(0))
+  let _z  = mem_write_int_raw(p, Int(0), Int(0))
+  let _w  = mem_write_raw(p, Int(0), fs_read_range(path, off, Int(3)))
+  let w   = mem_read_int_raw(p, Int(0))
+  let _f  = mem_free_raw(p, Int(16))
+
+  let b0  = int_mod(w, Int(256))
+  let b1  = int_mod(int_div(w, Int(256)), Int(256))
+  let r   = if int_lt(b0, Int(128)) { Int(1) }
+            else {
+              if int_lt(b1, Int(128)) { Int(2) } else { Int(3) }
+            }
+  int_add(r, Int(0))
+}

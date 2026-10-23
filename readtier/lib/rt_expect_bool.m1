@@ -1,0 +1,11 @@
+// rt_expect_bool — Bool assertion, same contract as rt_expect_int.
+fn rt_expect_bool(label: Text, got: Bool, want: Bool) -> Int {
+  let ok = bool_or(bool_and(got, want), bool_and(bool_not(got), bool_not(want)))
+  let _p = if ok {
+    io_println(str_concat(Text("  PASS  "), label))
+  } else {
+    io_println(str_concat(Text("  FAIL  "), label))
+  }
+  let r = if ok { int_add(Int(0), Int(0)) } else { int_add(Int(1), Int(0)) }
+  int_add(r, Int(0))
+}

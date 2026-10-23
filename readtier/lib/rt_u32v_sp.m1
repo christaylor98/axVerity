@@ -1,0 +1,5 @@
+// rt_u32v_sp — one u32v_push per step, for the append half of U6.
+fn rt_u32v_sp(i: Int) -> Int {
+  let _p = u32v_push(Text("rt:u"), i)
+  int_add(i, Int(0))
+}

@@ -1,0 +1,13 @@
+// wp_wait_durable_step — loop_while body for wp_wait_durable. Blocks on
+// wp-durable-advance (bchan_take — a genuine OS-level block, not a
+// busy-spin, same primitive wp_write_step/wp_mem_controller_step/
+// wp_flusher_step already use for their own blocking takes) until
+// flusher's next notification, then returns to let wp_wait_durable_more
+// recheck the watermark cell directly — the notification is only ever a
+// wakeup hint, never trusted as the answer itself. Tail wraps state in
+// an identity str_concat per CLAUDE.md §2: a bare parameter/var tail
+// does not emit as a CoreIR node (same shape gcore_flush_step.m1 uses).
+fn wp_wait_durable_step(state: Text) -> Text {
+  let _n = bchan_take(Text("wp-durable-advance"))
+  str_concat(state, Text(""))
+}

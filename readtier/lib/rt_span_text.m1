@@ -1,0 +1,39 @@
+// rt_span_text — the spanning record beginning at block `blk` of `stream`,
+// reassembled from the durable bytes and returned as Text.
+//
+// Two passes, for the reason rt_span_count's header gives: M1 has no realloc
+// and the total is derived, not stored, so the buffer cannot be sized until the
+// chain has been walked once. Pass one reads footers only; pass two stages each
+// block in turn and never holds more than one at a time beyond the reassembly
+// buffer itself.
+//
+// It returns "" for a record that is not valid UTF-8 rather than letting
+// bytes_to_text panic (bytes_io.rs). rt_read_rid's own header already says the
+// text form is meaningful only for a record that IS text, and a spanning record
+// is the likeliest thing in the store not to be — refusing quietly is the same
+// contract rt_dindex_rec applies at the other door, and a caller that wants the
+// size regardless has rt_span_total.
+fn rt_span_text(stream: Int, blk: Int) -> Text {
+  let total = rt_span_total(stream, blk)
+  let bcap  = int_add(total, Int(64))
+  let res   = mem_reserve_raw(bcap)
+  let buf   = tuple_field(res, Int(0))
+
+  let sres  = mem_reserve_raw(Int(256))
+  let sptr  = tuple_field(sres, Int(0))
+  let _z0 = mem_write_int_raw(sptr, Int(112), stream)
+  let _z1 = mem_write_int_raw(sptr, Int(128), rt_rid_stride(Unit()))
+  let _z2 = mem_write_int_raw(sptr, Int(136), buf)
+  let _z3 = mem_write_int_raw(sptr, Int(144), total)
+  let _z4 = mem_write_int_raw(sptr, Int(152), Int(0))
+  let _z5 = mem_write_int_raw(sptr, Int(160), blk)
+  let _z6 = mem_write_int_raw(sptr, Int(168), Int(0))
+  let _l  = loop_while(sptr, rt_span_more, rt_span_copy, Int(100000000))
+
+  let raw = mem_read_raw(buf, Int(0), total)
+  let utf = bytes_is_utf8(raw)
+  let out = if utf { bytes_to_text(raw) } else { Text("") }
+  let _f1 = mem_free_raw(sptr, Int(256))
+  let _f2 = mem_free_raw(buf, bcap)
+  str_concat(out, Text(""))
+}

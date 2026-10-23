@@ -1,0 +1,101 @@
+// wp_cap_stamp — record the capacity a store's blocks were WRITTEN at, and
+// refuse to write a store at a different one.
+//
+// AXVERITY_EXTENT_WRITE_PATH. Making block_capacity configurable opened a
+// silent-corruption path that did not exist while it was a literal, and this
+// closes it before the knob is usable.
+//
+// A RID is one integer: `rid = block * stride + ordinal`, and the stride is
+// derived from the block capacity (readtier/lib/rt_rid_stride.m1). So the
+// capacity is not merely a performance knob — it is part of how every RID in
+// the store DECODES. Change it on a store that already holds blocks and every
+// existing RID silently resolves to a different (block, ordinal) pair. Nothing
+// would fail; reads would just return the wrong record.
+//
+// Hence: the capacity is fixed for the LIFE OF A STORE.
+//
+//   .axverity-store/config/block_capacity   what a NEW store should use (config)
+//   .axverity-store/block_capacity          what THIS store actually used (stamp)
+//
+// The stamp is store state, not configuration, which is why it sits beside the
+// stream directories rather than inside config/. It is written once, when the
+// store is empty, and thereafter only verified. The read tier decodes against
+// the STAMP, never the config — the config says what someone wants, the stamp
+// says what the bytes on disk mean.
+//
+// Three cases:
+//   stamp present, equal          proceed
+//   stamp present, different,
+//     store NON-EMPTY             FATAL, exit — never silently re-stamp
+//   stamp present, different,
+//     store EMPTY                 re-stamp. The stamp exists to protect RIDs
+//                                 already handed out, and an empty store has
+//                                 handed out none. A run that stamped and then
+//                                 failed before writing a block would otherwise
+//                                 pin the capacity of a store with nothing in
+//                                 it, which protects nothing and blocks a
+//                                 legitimate reconfiguration.
+//   stamp absent, store empty     write it
+//   stamp absent, store non-empty a store written before the stamp existed.
+//                                 Those are all 16384 by construction (it was a
+//                                 literal), so 16384 is accepted and stamped;
+//                                 anything else is FATAL rather than assumed.
+//
+// `first` is wp_bid_resolve's max+1 over the durable store, so first == 0 means
+// no blocks exist yet. Taking it as a parameter rather than re-resolving keeps
+// this fn free of a second, independently-drifting scan of the store.
+fn wp_cap_stamp(cap: Int, first: Int) -> Int {
+  let path = Text(".axverity-store/block_capacity")
+  let have = fs_file_exists(path)
+  let body = if have { str_trim(fs_read_text(path)) } else { Text("") }
+  // A stamp file with no text (a crash between create and write) is its own
+  // case, not a 0: `readable` is false for it, and on a store that already
+  // has blocks it is FATAL below. str_to_int("") is a fault, so the parse
+  // runs only in the arm where there is text.
+  let blank    = bool_and(have, str_eq(body, Text("")))
+  let readable = bool_and(have, bool_not(blank))
+  let got  = if readable { str_to_int(body) } else { int_sub(Int(0), Int(1)) }
+
+  let _e0 = if bool_and(blank, int_gt(first, Int(0))) {
+              let _m = io_println(Text("FATAL block_capacity_stamp_empty — the stamp file is empty and the store has blocks; its capacity cannot be established"))
+              proc_exit(Int(1))
+            } else {
+              io_print(Text(""))
+            }
+
+  let differs  = bool_and(readable, bool_not(int_eq(got, cap)))
+  let mismatch = bool_and(differs, int_gt(first, Int(0)))
+  let _e1 = if mismatch {
+              let _m = io_println(str_concat(Text("FATAL block_capacity_changed store="),
+                         str_concat(int_to_str(got),
+                           str_concat(Text(" configured="),
+                             str_concat(int_to_str(cap),
+                               Text(" — capacity is fixed for the life of a store; every existing RID would decode differently"))))))
+              proc_exit(Int(1))
+            } else {
+              io_print(Text(""))
+            }
+
+  let orphan = bool_and(bool_not(have),
+                 bool_and(int_gt(first, Int(0)), bool_not(int_eq(cap, Int(16384)))))
+  let _e2 = if orphan {
+              let _m = io_println(str_concat(Text("FATAL unstamped_store_is_not_legacy configured="),
+                         str_concat(int_to_str(cap),
+                           Text(" — a store with blocks and no stamp predates the stamp and is 16384 by construction"))))
+              proc_exit(Int(1))
+            } else {
+              io_print(Text(""))
+            }
+
+  // Written when absent, and REWRITTEN when it differs on an empty store —
+  // the only case where changing it is safe.
+  let restamp = bool_or(bool_not(readable), differs)
+  let _w = if restamp {
+             let _x = fs_write_text(path, int_to_str(cap))
+             io_print(Text(""))
+           } else {
+             io_print(Text(""))
+           }
+
+  int_add(cap, Int(0))
+}

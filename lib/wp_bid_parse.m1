@@ -1,0 +1,25 @@
+// wp_bid_parse — STRICT parse of one directory entry into a block sequence
+// number, or -1 if the entry is not a durable block.
+//
+// The strictness is load-bearing. fs_write_raw builds a unique temp name and
+// renames it into place (bytes_io.rs), and a crash between those two steps
+// leaves the temp behind — measured at 9 survivors across 20 real SIGKILLs,
+// with nothing in the system that sweeps them. A resolver that accepts one
+// votes for a block that never became durable, hands out an id one past a
+// block nobody wrote, and puts a permanent hole in the sequence. The
+// continuation footer asserts block k is followed by k+1, so a hole is not
+// cosmetic — it stops any replay that uses "first missing id" as its frontier.
+//
+// `str_ends_with(".bin")` is what rejects the temp, whose name ends in its
+// uniquifier rather than the suffix. The `if` keeps str_to_int away from a
+// non-numeric middle; effects in an untaken branch do not fire. str_to_int
+// yields 0 on unparseable input, which is the MINIMUM id and therefore cannot
+// inflate a maximum — a garbage name can never push the counter forward.
+fn wp_bid_parse(name: Text) -> Int {
+  let pre = str_starts_with(name, Text("block-"))
+  let suf = str_ends_with(name, Text(".bin"))
+  let ok  = bool_and(pre, suf)
+  let mid = str_before(str_after(name, Text("block-")), Text(".bin"))
+  let v   = if ok { str_to_int(mid) } else { int_sub(Int(0), Int(1)) }
+  int_add(v, Int(0))
+}

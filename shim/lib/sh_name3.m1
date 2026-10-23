@@ -1,0 +1,30 @@
+// sh_name3 — render one result row out of the tier's internal id space.
+//
+// THE R17 SEAM. rt_query is asked in names and rt_out_at answers in internal
+// ids, so round 1's wire handed clients identifiers they had no way to read.
+// rt_nidx_name_of is the tier's own published reverse map — its header says
+// the traversal API "carries ids and renders names only at the boundary", and
+// the shim is that boundary.
+//
+// This does not violate §5.2 property 3. "Add no semantics — no naming" forbids
+// the shim from INVENTING names or holding a namespace of its own; it reads the
+// tier's map and keeps nothing. Three point lookups per row, every row, every
+// op: no cache, no persistence, no map built here. That matters beyond
+// tidiness — the id assignment follows fs_list_dir's lexicographic block order
+// (io.rs:141), so it changes as soon as a store grows past ten blocks, and a
+// map cached across a REBUILD would render confidently wrong names.
+//
+// An id the index never minted reads back as "" (rt_nidx_name_of.m1) and is
+// passed through as an empty field rather than being papered over — an
+// unresolvable id is a tier inconsistency and should fail a comparison loudly.
+fn sh_name3(key: Text) -> Text {
+  let us = chr(Int(31))
+  let a  = str_before(key, us)
+  let r  = str_after(key, us)
+  let b  = str_before(r, us)
+  let c  = str_after(r, us)
+  let na = rt_nidx_name_of(str_to_int(a))
+  let nb = rt_nidx_name_of(str_to_int(b))
+  let nc = rt_nidx_name_of(str_to_int(c))
+  str_concat(na, str_concat(us, str_concat(nb, str_concat(us, nc))))
+}

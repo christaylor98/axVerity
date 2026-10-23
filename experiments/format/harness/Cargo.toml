@@ -1,0 +1,14 @@
+[package]
+name = "fmth"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fmth"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+debug = false
+
+[dependencies]

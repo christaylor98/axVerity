@@ -1,0 +1,14 @@
+// rt_u32v_tp — time n iterations of rt_u32v_sp and return the elapsed ns.
+//
+// ONE TIMED LOOP PER FN, which is not a stylistic choice. `range(Int(0), n)`
+// is textually identical in each arm, and range is pure + deterministic, so
+// putting all four loops in one fn body would hash-cons them to a SINGLE list
+// node — and every call site that then names that list emits a .clone(), i.e.
+// an O(n) deep copy of a Vec<Value> landing inside the interval being timed.
+// Separate fns give each loop its own list and keep the copy out of the clock.
+fn rt_u32v_tp(n: Int) -> Int {
+  let t0 = now_unix_nanos(Unit())
+  let _f = foreach(range(Int(0), n), rt_u32v_sp)
+  let t1 = now_unix_nanos(Unit())
+  int_sub(t1, t0)
+}

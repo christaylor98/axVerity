@@ -1,0 +1,21 @@
+// NESTED_IF_WORKAROUND (dispatch): calls wp_dc_drain_one rather than inlining the take.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_dc_drain_step — one step of a disk-controller coalesce pass. Threads the
+// highest message KIND seen through loop_count, so the caller learns whether
+// the sentinel was among the drained messages.
+//
+// Re-checks bchan_len itself rather than trusting the length the caller
+// measured: only this thread consumes wp-dc, but both producers can still
+// ENQUEUE during a drain, so a measured length is a lower bound on what is
+// there and never an upper bound on what may safely be taken. If the queue has
+// gone empty the step is a no-op — it must never blocking-take on an empty
+// queue, which would park the coordinator behind a producer with nothing to
+// say.
+//
+// The take lives in wp_dc_drain_one rather than in this fn's `if`, because an
+// `if` nested inside another branch executes its untaken side and would take
+// from an empty queue. Only a fn CALL is evaluated lazily.
+fn wp_dc_drain_step(kmax: Int) -> Int {
+  let d = bchan_len(Text("wp-dc"))
+  if int_gt(d, Int(0)) { wp_dc_drain_one(kmax) } else { int_add(kmax, Int(0)) }
+}

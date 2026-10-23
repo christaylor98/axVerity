@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# axshim — the launcher. Sets the process's working directory to the store root
+# and never moves again, which is what selects the store (see src/shim.m1).
+#
+# This wrapper exists because the bridge has no chdir primitive; see the shim's
+# report, R16. It adds nothing to the wire and terminates no policy.
+set -euo pipefail
+#
+# AXVERITY_SHIM_BRIDGE_PRIMS_V1: argv[3] is the writer ADMIT spawns. It is
+# resolved to an ABSOLUTE path here, before the cd, because after the cd a
+# relative path would resolve against the store rather than the repo.
+[ $# -ge 2 ] || { echo "usage: axshim <store-root> <port> [writer]" >&2; exit 2; }
+ROOT=$(cd "$1" && pwd)
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+W=${3:-$HERE/../build/wp-slice}
+WRITER=$(cd "$(dirname "$W")" && pwd)/$(basename "$W")
+[ -x "$WRITER" ] || echo "axshim: warning: writer $WRITER is not executable" >&2
+cd "$ROOT"
+# AX158 stopgap: reload front (see axshim-front.py). AXSHIM_DIRECT=1 skips it.
+if [ -z "${AXSHIM_DIRECT:-}" ] && command -v python3 >/dev/null 2>&1; then
+  exec python3 "$HERE/bin/axshim-front.py" "$ROOT" "$2" "$WRITER" "$HERE/build/axshim-bin"
+fi
+exec "$HERE/build/axshim-bin" "$ROOT" "$2" "$WRITER"

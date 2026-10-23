@@ -1,0 +1,12 @@
+// wp_mc_more — loop_while condition for mem_controller: keep assigning blocks
+// until the end-of-stream sentinel has been seen.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. state = "<seq> FS <done>"; the body sets
+// done=1 when it takes the sentinel off wp-seal-done. The flag lives in the
+// state rather than in a cell because only this thread reads or writes it —
+// a cell would be shared-nothing state pretending to be shared.
+fn wp_mc_more(state: Text) -> Bool {
+  let fs   = chr(Int(28))
+  let done = str_to_int(str_after(state, fs))
+  int_eq(done, Int(0))
+}

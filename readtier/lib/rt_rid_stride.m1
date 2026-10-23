@@ -1,0 +1,47 @@
+// rt_rid_stride — the BYTE stride that packs (stream, block, offset) into a
+// single locator.
+//
+// RID_IS_ONE_INTEGER, still. A locator names a RECORD, and a block holds many,
+// so it must carry position as well as block. It does that arithmetically, with
+// no stored mapping anywhere:
+//
+//     rid    = (seq * 2 + stream) * stride + offset
+//     offset = rid % stride
+//     stream = (rid / stride) % 2
+//     seq    = (rid / stride) / 2
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b replaced an ORDINAL with a BYTE OFFSET,
+// and added the stream. Both changes were forced by measurement, not taste:
+//
+//   * The ordinal had to be RESOLVED BY SCANNING. rt_dscan_step walked records
+//     from the block's start counting to the wanted ordinal, and the block was
+//     STAGED IN FULL first. Measured on a full 16 MiB block: 25.3 ms before a
+//     single scan step (staging), then 5.77 us per ordinal — ~160 ms for an
+//     average record, ~295 ms for the last. A direct pread of the record is
+//     676 ns. The ordinal scheme was viable only while blocks were 16 KiB.
+//   * WITHOUT the stream, rt_dblk_path had to GUESS which directory held the
+//     block: two fs_file_exists probes at 1,657-1,847 ns each, so a payload
+//     lookup spent ~3.5 us deciding where to look — five times the cost of the
+//     read it enabled. And once slablock mints per-handle sequences (5d), an
+//     id alone stops being unique at all: measured, structure/block-36 and
+//     payload/block-36 both existed, with different sizes and hashes, and the
+//     probe order silently picked one.
+//
+// The stride is the BLOCK CAPACITY IN BYTES, and an offset is always below it
+// by construction — a block's payload is at most capacity-8. The old ordinal
+// stride had to be argued about and asserted (FATAL rid_ordinal_overflow);
+// this one cannot overflow, because the thing it bounds is the same thing that
+// defines it.
+//
+// Read from the STAMP (.axverity-store/block_capacity) — what this store's
+// blocks were actually written at — never from config, which says what someone
+// wants the NEXT store to use. Decoding must follow the bytes on disk.
+fn rt_rid_stride(_u: Unit) -> Int {
+  let path = Text(".axverity-store/block_capacity")
+  let have = fs_file_exists(path)
+  if have {
+    str_to_int(str_trim(fs_read_text(path)))
+  } else {
+    int_add(Int(16384), Int(0))
+  }
+}

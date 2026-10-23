@@ -1,0 +1,17 @@
+// rt_read_frame — the FRAMED record whose varint starts at `off` in `path`, as
+// Text, or "" when the block is not durable.
+//
+// Split out of rt_read_rid so that fn's absent-block test and its spanning test
+// are two TOP-LEVEL ifs over fn calls rather than one `if` nested inside
+// another's branch, which executes its untaken side (CLAUDE.md section 2). The
+// nesting would be live here, not theoretical: the untaken side reads a length
+// prefix off disk at an offset that may not have one.
+fn rt_read_frame(path: Text, off: Int) -> Text {
+  let have = int_gt(str_len(path), Int(0))
+  let out  = if have {
+               rt_read_at(path, int_add(off, rt_rec_vlen(path, off)), rt_rec_len(path, off))
+             } else {
+               Text("")
+             }
+  str_concat(out, Text(""))
+}

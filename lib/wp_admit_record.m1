@@ -1,0 +1,24 @@
+// NESTED_IF_WORKAROUND (dispatch): chooses between wp_span_record (FORCED) and
+// wp_pack_record (FORCED). Revert scope — grep NESTED_IF_WORKAROUND.
+//
+// wp_admit_record — route one admitted record to the framed path or the
+// spanning path. Exists only so the choice is a TOP-LEVEL `if` branching to
+// fns: an `if` nested inside a branch executes its untaken side, and both
+// arms here take a pool block and seal, so running the untaken one would
+// consume blocks and signal seals that never happened.
+//
+// A record spans when EITHER structural bound cannot take it framed:
+//   len + vlen > pcap    it does not fit a whole empty block
+//   len > 2097151        the three-byte prefix cannot express its length
+// Both are answered the same way, because a spanning record's body carries no
+// length prefix at all. That is what retires the framing ceiling as an
+// ADMISSION bound: nothing is refused for being unframeable any more, it spans.
+fn wp_admit_record(sptr: Int) -> Int {
+  let iptr = mem_read_int_raw(sptr, Int(0))
+  let roff = mem_read_int_raw(sptr, Int(16))
+  let len  = mem_read_int_raw(iptr, roff)
+  let vlen = mem_read_int_raw(sptr, Int(152))
+  let pcap = mem_read_int_raw(sptr, Int(32))
+  let big = bool_or(int_gt(int_add(len, vlen), pcap), int_gt(len, Int(2097151)))
+  if big { wp_span_record(sptr) } else { wp_pack_record(sptr) }
+}

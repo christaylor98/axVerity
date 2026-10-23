@@ -1,0 +1,39 @@
+// NESTED_IF_WORKAROUND (FORCED): its own take must not sit inside a branch.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND.
+//
+// wp_flusher_tick — the SLA sweep, and THE ONLY PLACE THE DURABLE WATERMARK
+// ADVANCES.
+//
+// AXVERITY_EXTENT_WRITE_PATH 5d. slablock's handles are THREAD-LOCAL by design
+// (the shared-nothing property it inherits from logbuf.rs), so slab_append_raw
+// and slab_tick must be called by whichever thread called slab_open. The
+// flusher is that thread, which is why a tick travels the whole queue to reach
+// it rather than being actioned where it is born.
+//
+// slab_tick is SELF-GATED: if less than sla_us has elapsed it does nothing and
+// returns -1. So calling it once per tick message is right even when the queue
+// coalesced several — the gate, not the caller, controls fsync cadence. One
+// sweep fsyncs EVERY block with unflushed data and seals every full one, which
+// is the group commit the coalescing exists for.
+//
+// THE WATERMARK MOVES HERE BECAUSE THIS IS WHERE DURABILITY HAPPENS.
+// wp_flusher_eject only appends — slab_append_raw never fsyncs — so it records
+// the highest seq APPENDED and nothing more. A sweep that returns >= 0 has
+// fsynced everything appended before it, so that is the moment the appended
+// mark becomes a durable one. A GATED sweep (-1) has done nothing, and must
+// not promote anything: the next tick will.
+fn wp_flusher_tick(_u: Unit) -> Text {
+  let _drop = bchan_take(Text("wp-flush-live"))
+  let hs    = bchan_take(Text("wp-slab-s"))
+  let _ps   = bchan_send(Text("wp-slab-s"), hs)
+  let hp    = bchan_take(Text("wp-slab-p"))
+  let _pp   = bchan_send(Text("wp-slab-p"), hp)
+
+  let ts    = slab_tick(hs)
+  let tp    = slab_tick(hp)
+
+  // Fired if EITHER handle swept. A gated handle simply had nothing due.
+  let fired = bool_or(int_gte(ts, Int(0)), int_gte(tp, Int(0)))
+  let _prom = if fired { wp_promote_durable(Unit()) } else { io_print(Text("")) }
+  str_concat(Text("0"), Text(""))
+}

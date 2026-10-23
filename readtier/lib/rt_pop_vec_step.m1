@@ -1,0 +1,25 @@
+// rt_pop_vec_step — one triple of the synthetic population, PROJECTIONS ONLY.
+// Mints the ids arithmetically instead of resolving names, so the dictionary
+// is never touched and the only thing that grows is the three u32 arrays.
+//
+// WHAT THIS REPRODUCES, EXACTLY: the record COUNT and the per-column
+// CARDINALITY of a real build — n/4 sources, 7 verbs, n/4 targets.
+//
+// WHAT IT DOES NOT: the distribution. Real minting interleaves by first
+// appearance (i=0 gives s=0, v=1, t=2, i=1 gives v=3, t=4); this hands out
+// blocked ranges. Same number of u32, arranged differently.
+//
+// That is harmless for a FOOTPRINT, which counts u32 and does not care about
+// their order. It would be INVALID for a sort-timing claim: presortedness is
+// what already makes rt:A's own sort number an artefact, and this arm arranges
+// its input differently from the thing it stands in for. Footprint only.
+fn rt_pop_vec_step(i: Int) -> Int {
+  let n     = str_to_int(map_get(Text("rt:bench"), Text("n")))
+  let tcard = int_max(Int(1), int_div(n, Int(4)))
+  let nsrc  = int_div(int_add(n, Int(3)), Int(4))
+  let s     = int_div(i, Int(4))
+  let v     = int_add(nsrc, int_mod(i, Int(7)))
+  let t     = int_add(int_add(nsrc, Int(7)), int_mod(i, tcard))
+  let r     = rt_index_triple(s, v, t)
+  int_add(r, Int(0))
+}

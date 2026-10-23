@@ -1,0 +1,46 @@
+// NESTED_IF_WORKAROUND (dispatch): hands the bundle to one of two leaf fns via wp-flush-live.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_flusher_step — the flusher's dispatch: take one message off wp-flush and
+// hand it to exactly one half.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5a. The loop is bound by the END-OF-STREAM
+// SENTINEL rather than a predicted block count. A real bundle's first field is
+// a pool-block ADDRESS, always positive, so -1 is unambiguous.
+//
+// WHY THE HANDOFF CHANNEL, and it is not stylistic:
+//
+// CLAUDE.md section 2 records that effects in an untaken branch do not fire.
+// That holds for a TOP-LEVEL `if`. It does NOT hold for an `if` NESTED inside
+// another branch: measured here, an eject body moved wholesale into an `else`
+// still executed the untaken side of its own inner depth-1 trim, so
+// `bchan_take("wp-durable-block")` ran against an empty queue and the flusher
+// blocked forever on its FIRST block. The trace that caught it:
+//
+//     TRACE f: about to trim, durable-block len=0     <- then never returns
+//
+// A fn CALL in a branch is evaluated correctly — only the nested `if` is not.
+// So each half is its own fn, and since `Value` is not a legal M1 surface type
+// for a parameter, the bundle reaches it through wp-flush-live rather than as
+// an argument. Exactly one half runs, so exactly one take happens.
+fn wp_flusher_step(state: Text) -> Text {
+  let bundle = bchan_take(Text("wp-flush"))
+  let ptr    = list_get(bundle, Int(0))
+  let _hand  = bchan_send(Text("wp-flush-live"), bundle)
+  // -1 end of stream, -2 SLA tick, anything else a pool-block address.
+  //
+  // FLAT, not nested. The three-way choice is a fn per arm selected by two
+  // TOP-LEVEL ifs, because "branch to a fn, never to a block containing
+  // another if" is the rule this file's header records — and an `else` block
+  // holding another `if` is exactly the shape that broke. The inner branches
+  // here are pure fn calls, which MAY be safe, but that is a hypothesis and
+  // the original defect was found by gdb and per-statement tracing, not by
+  // reasoning. The flat form costs one extra comparison and needs no
+  // hypothesis at all.
+  let tick   = int_eq(ptr, int_sub(Int(0), Int(2)))
+  let eos    = bool_and(int_lt(ptr, Int(0)), bool_not(tick))
+  let o1     = if tick { wp_flusher_tick(Unit()) } else { Text("") }
+  let o2     = if eos  { wp_flusher_eos(Unit())  } else { Text("") }
+  let o3     = if bool_or(tick, eos) { Text("") } else { wp_flusher_eject(Unit()) }
+  let out    = str_concat(o1, str_concat(o2, o3))
+  str_concat(out, Text(""))
+}

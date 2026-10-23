@@ -1,0 +1,40 @@
+// sh_index_step — one request on the INDEX thread (AXVERITY_SHIM_CONCURRENT_CONNS_V1, 2026-10-19).
+//
+// The projection (readtier's u32v vectors) is thread-local, so exactly one thread can answer from it:
+// this one, the process's main thread, which also built it. Connection threads (sh_acceptor) each own
+// one client socket -- socket handles are thread-local too -- read its frames and post each live one
+// here on `sh-idx` as (meta "k TAB plen TAB hdrw", frame bytes). This thread copies the frame into its
+// own buffer, dispatches it unchanged (sh_dispatch) with conn = -(k+1), so every reply frame lands in
+// the reply buffer (sh_send), and hands the whole reply to connection thread k on `sh-a:<k>` as ONE
+// Bytes. Requests are therefore answered one at a time in arrival order -- QUERY, REBUILD and ADMIT
+// keep the single-writer schedule they had before connections were served concurrently -- but a
+// client holding its connection open no longer keeps every other client out.
+fn sh_index_step(sptr: Int) -> Int {
+  let tab  = chr(Int(9))
+  let job  = bchan_take(Text("sh-idx"))
+  let meta = value_to_text(ctor_field(job, Int(0)))
+  let frame = value_to_bytes(ctor_field(job, Int(1)))
+  let k    = str_to_int(str_before(meta, tab))
+  let r1   = str_after(meta, tab)
+  let plen = str_to_int(str_before(r1, tab))
+  let hdrw = str_to_int(str_after(r1, tab))
+  let buf  = mem_read_int_raw(sptr, Int(16))
+  let rb   = str_to_int(map_get(Text("sh"), Text("rb")))
+  let vconn = int_sub(int_sub(Int(0), k), Int(1))
+  let _r0  = mem_write_int_raw(rb, Int(8), Int(0))
+  let _r1  = mem_write_int_raw(rb, Int(24), Int(0))
+  let _cp  = mem_write_raw(buf, Int(0), frame)
+  let _c   = mem_write_int_raw(sptr, Int(8), vconn)
+  let _h   = mem_write_int_raw(sptr, Int(40), hdrw)
+  let _d   = sh_dispatch(sptr, plen, hdrw)
+  let over = int_eq(mem_read_int_raw(rb, Int(24)), Int(1))
+  let _o   = if over {
+    let _z0 = mem_write_int_raw(rb, Int(8), Int(0))
+    let _z1 = mem_write_int_raw(rb, Int(24), Int(0))
+    sh_reply(vconn, Int(1), Text("OVERSIZE reply exceeds the shim's reply buffer - refusing to send a truncated answer"))
+  } else { Unit() }
+  let data = mem_read_int_raw(rb, Int(0))
+  let fill = mem_read_int_raw(rb, Int(8))
+  let _s   = bchan_send(str_concat(Text("sh-a:"), int_to_str(k)), mem_read_raw(data, Int(0), fill))
+  int_add(sptr, Int(0))
+}

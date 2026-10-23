@@ -1,0 +1,97 @@
+// rt_durable_selftest — the P3 gate, run against a store this process did not
+// write.
+//
+// COLD_START_IS_THE_TEST. Every assertion below runs after rt_rebuild has
+// reconstructed the tier from durable bytes alone, in a process that never saw
+// the writer. A populate-then-query check in one process proves nothing here
+// for the same reason a same-process write-then-read proved nothing about the
+// format: it cannot distinguish "the index is correct" from "the index is
+// still in memory".
+//
+// The expectations are the corpus's own arithmetic, not a recording of what
+// the tier happened to return. A structure record at index i is
+// `s{i/4} v{i%7} t{i%tcard}` with tcard = max(1, n/4), so with n known the
+// answer to every pattern is computable independently — which is what makes
+// these expectations rather than observations. That shape is the same one
+// rt_pop_step builds in RAM, so the durable path is checked against the
+// identical ground truth the RAM tier was.
+//
+// n arrives through the map because the driver knows the corpus size and the
+// store does not record it. `lifetimes` is how many times that corpus was
+// written into the store: the structure generator is a pure function of the
+// record index, so a second lifetime writes the SAME n triples again. That is
+// deliberately useful — the record count must double while every query answer
+// stays identical, which separates "read both lifetimes" from "read one" in a
+// way a count-only or an answer-only check cannot.
+fn rt_durable_selftest(_u: Unit) -> Int {
+  let n     = str_to_int(map_get(Text("rt:d"), Text("n")))
+  let lv    = int_max(Int(1), str_to_int(map_get(Text("rt:d"), Text("lifetimes"))))
+  let tcard = int_max(Int(1), int_div(n, Int(4)))
+
+  let recs = rt_rebuild(Unit())
+  let f0   = rt_expect_int(Text("cold/records rebuilt from the structure stream"),
+               recs, int_mul(n, lv))
+
+  // Every name in the corpus, and no others: n/4 sources (rounded up), 7
+  // verbs, tcard targets.
+  let nsrc  = int_div(int_add(n, Int(3)), Int(4))
+  let nname = int_add(int_add(nsrc, Int(7)), tcard)
+  let f1    = rt_expect_int(Text("cold/distinct names"), rt_nidx_count(Unit()), nname)
+
+  // The eight binding patterns, against the corpus's own arithmetic.
+  let f2 = rt_expect_int(Text("cold/??? all triples"),
+             rt_query(Int(0), Text(""), Text(""), Text("")), n)
+  let f3 = rt_expect_int(Text("cold/S?? s0 has 4"),
+             rt_query(Int(1), Text("s0"), Text(""), Text("")), Int(4))
+  let f4 = rt_expect_int(Text("cold/??T t0 has 4"),
+             rt_query(Int(4), Text(""), Text(""), Text("t0")), Int(4))
+  let f5 = rt_expect_int(Text("cold/SV? s0 v0 has 1"),
+             rt_query(Int(3), Text("s0"), Text("v0"), Text("")), Int(1))
+  let f6 = rt_expect_int(Text("cold/S?T s0 t0 has 1"),
+             rt_query(Int(5), Text("s0"), Text(""), Text("t0")), Int(1))
+  let f7 = rt_expect_int(Text("cold/?VT v0 t0 has 1"),
+             rt_query(Int(6), Text(""), Text("v0"), Text("t0")), Int(1))
+  let f8 = rt_expect_int(Text("cold/SVT s0 v0 t0 is a member"),
+             rt_query(Int(7), Text("s0"), Text("v0"), Text("t0")), Int(1))
+  let f9 = rt_expect_int(Text("cold/?V? v0 has n/7 rounded up"),
+             rt_query(Int(2), Text(""), Text("v0"), Text("")),
+             int_div(int_add(n, Int(6)), Int(7)))
+
+  // A triple the corpus cannot contain: i/4 = 0 pairs only with i in 0..3, so
+  // s0 never reaches t1 at any population above 4. A cold index that answered
+  // this one would be inventing edges, which is the failure a count-only check
+  // cannot see.
+  let fa = rt_expect_int(Text("cold/SVT absent triple is absent"),
+             rt_query(Int(7), Text("s0"), Text("v0"), Text("t1")), Int(0))
+  let fb = rt_expect_int(Text("cold/S?? unknown name returns nothing"),
+             rt_query(Int(1), Text("nosuchname"), Text(""), Text("")), Int(0))
+
+  // The durable name-index: a name resolves to a RID, and that RID reads back
+  // a record that actually contains the name. This is the end-to-end claim —
+  // name to durable address to bytes — with no lookup table in between.
+  let rid0 = rt_rid_of(Text("s0"))
+  let fc   = rt_expect_bool(Text("cold/name-index resolves s0 to a RID"),
+               int_gte(rid0, Int(0)), Bool(true))
+  let rec0 = rt_read_rid(rid0)
+  let fd   = rt_expect_bool(Text("cold/point read of that RID mentions s0"),
+               str_starts_with(rec0, Text("s0")), Bool(true))
+  let fe   = rt_expect_bool(Text("cold/point read returns a well-formed triple"),
+               bool_not(str_eq(str_after(rec0, chr(Int(31))), Text(""))), Bool(true))
+  let ff   = rt_expect_int(Text("cold/record length agrees with the point read"),
+               rt_read_rid_len(rid0), str_len(rec0))
+
+  // A RID is ONE INTEGER and decodes arithmetically. Checked, not asserted:
+  // the block it names must be the one the record was actually read from.
+  let fg = rt_expect_bool(Text("cold/RID decodes to an existing block"),
+             bool_not(str_eq(rt_dblk_path(int_mod(int_div(rid0, rt_rid_stride(Unit())), Int(2)),
+                                          int_div(int_div(rid0, rt_rid_stride(Unit())), Int(2))), Text(""))),
+             Bool(true))
+  let fh = rt_expect_int(Text("cold/a RID past the end of the store reads nothing"),
+             rt_read_rid_len(int_mul(Int(999999), rt_rid_stride(Unit()))),
+             int_sub(Int(0), Int(1)))
+
+  let s1 = int_add(int_add(int_add(f0, f1), int_add(f2, f3)), int_add(int_add(f4, f5), int_add(f6, f7)))
+  let s2 = int_add(int_add(int_add(f8, f9), int_add(fa, fb)), int_add(int_add(fc, fd), int_add(fe, ff)))
+  let s3 = int_add(fg, fh)
+  int_add(s1, int_add(s2, s3))
+}

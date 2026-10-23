@@ -1,0 +1,22 @@
+// sh_recv_more — loop_while condition for reading one whole frame.
+//
+// Keep reading while the peer is still there AND the frame is not yet complete.
+// "Not complete" covers both unknowns: the length prefix itself may still be
+// split across segments (total < 0), or the payload may be short (filled <
+// total). One tcp_read is one segment, never a frame — treating it as a frame
+// is the classic wire bug, and it shows up only under load, which is exactly
+// when a conformance run stops being able to explain itself.
+//
+// Threading the scratch POINTER as the loop state is deliberate: loop_while
+// clones its accumulator every iteration (iter.rs:78), so an accumulator
+// carrying the frame bytes would be O(N^2) in the frame size. An Int clone is
+// free and the bytes never leave raw memory.
+fn sh_recv_more(sptr: Int) -> Bool {
+  let eof    = mem_read_int_raw(sptr, Int(56))
+  let filled = mem_read_int_raw(sptr, Int(32))
+  let cap    = mem_read_int_raw(sptr, Int(24))
+  let total  = mem_read_int_raw(sptr, Int(64))
+  let want   = bool_or(int_lt(total, Int(0)), int_lt(filled, total))
+  let room   = int_lt(filled, cap)
+  bool_and(bool_and(int_eq(eof, Int(0)), want), room)
+}

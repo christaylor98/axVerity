@@ -1,0 +1,31 @@
+// rt_dbid_parse — STRICT parse of one durable block filename into its block
+// id, or -1 if the entry is not a durable block.
+//
+// The read tier carries its own copy rather than calling the write path's
+// wp_bid_parse: they are separate binaries linked from separate sources
+// against separate registries, and readtier/ deliberately references nothing
+// in the wp_* pipeline. The rule they both implement is the same one, and it
+// is load-bearing on both sides.
+//
+// Strictness matters here for a different reason than it does for the writer.
+// The writer must not let a leftover `.tmp.<pid>.<n>` vote in max+1, or it
+// mints past a block nobody wrote. The READER must not try to decode one: a
+// temp file is a partially written block, so scanning it would either fail to
+// parse or — worse — parse a truncated tail as records and index data that was
+// never durable. fs_write_raw leaves these behind on any crash and nothing
+// sweeps them; 9 survived 20 real SIGKILLs.
+//
+// str_to_int yields 0 on unparseable input, so a name like `block-xyz.bin`
+// resolves to block 0 rather than being rejected. That is checked here rather
+// than assumed: the middle must be non-empty and must round-trip through
+// int_to_str, which rejects anything that is not a plain decimal id.
+fn rt_dbid_parse(name: Text) -> Int {
+  let pre = str_starts_with(name, Text("block-"))
+  let suf = str_ends_with(name, Text(".bin"))
+  let mid = str_before(str_after(name, Text("block-")), Text(".bin"))
+  let ok  = bool_and(bool_and(pre, suf), bool_not(str_eq(mid, Text(""))))
+  let v   = if ok { str_to_int(mid) } else { int_sub(Int(0), Int(1)) }
+  let rt  = if ok { str_eq(int_to_str(v), mid) } else { bool_or(Bool(false), Bool(false)) }
+  let r   = if rt { int_add(v, Int(0)) } else { int_sub(Int(0), Int(1)) }
+  int_add(r, Int(0))
+}

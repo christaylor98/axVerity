@@ -1,0 +1,88 @@
+// sh_serve_step — read one frame on THIS connection's thread and have the index thread answer it
+// (AXVERITY_SHIM_CONCURRENT_CONNS_V1, 2026-10-19: the dispatch moved to sh_dispatch, unchanged).
+// What follows is the op set as it always was: The whole op set is here and
+// it is closed: three opcodes, each with an in-process counterpart, and no
+// fourth door (§5.2 property 4).
+//
+//   0x01 QUERY    -> rt_query, then rt_out_count / rt_out_at, behind the
+//                    freshness gate (sh_query)
+//   0x02 REBUILD  -> rt_rebuild, guarded, and the only thing that clears the
+//                    freshness gate (sh_rebuild)
+//   0x03 ADMIT    -> stage the batch, spawn the writer (sh_admit)
+//
+// ── 0x04 DURABLE IS GONE (AXVERITY_W2_ADMIT_HANDLE_V1, G3) ──────────────────
+// It answered `ok` to every argument ever put to it, including a watermark
+// beyond anything admitted and a non-numeric one (W7). The comment that used to
+// stand here argued that this was honest -- the writer process exiting IS the
+// durability signal, so there is nothing left to wait for. That argument is
+// sound and it does not rescue the verb, because a verb whose reply does not
+// depend on its argument is not answering the question the argument asks. A
+// consumer calling DURABLE("41") is asking whether block 41 survived power
+// loss; `ok` reads as yes; the server never looked.
+//
+// The intent's own rule decides it: NO_AHEAD_OF_CONDITION_INFRA -- where the
+// triggering condition does not exist, DELETE THE HANDLER. There is no wait to
+// perform on a run-and-exit writer, so there is nothing for this verb to do,
+// and a verb with nothing to do that answers `ok` anyway is the exact shape
+// UNKNOWN_MUST_NOT_LOOK_BENIGN forbids. Opcode 4 now answers `UNKNOWN opcode 4`
+// like every other unassigned byte -- a refusal a client cannot mistake for a
+// durability guarantee.
+//
+// This is a REMOVAL from the published op set and therefore a major-version
+// change to the wire (§9 rule 1, §5.9). The contract goes to v2.0 with it.
+//
+// There is no LEASE verb because there is no lease to take. This process
+// accepts connections concurrently but answers requests one at a time on the
+// index thread (sh_index_step), so the single-writer
+// term (§4.2) is a property of the schedule rather than a token a client has to
+// remember to release — which also disposes of the wedged-lease-holder failure
+// mode the contract left open at T6.
+//
+// A body is decoded as text only for the verbs whose bodies ARE text, and only
+// after bytes_is_utf8 says it is text. ADMIT's body is a raw record stream and
+// is never validated or converted at all. bytes_to_text still panics on invalid
+// UTF-8 (bytes_io.rs:217), so the check has to happen before the conversion
+// rather than around it — round 1 skipped it and a single 0xFF took the entry
+// down (R19).
+//
+// AXVERITY_SHIM_BRIDGE_PRIMS_V1 / R22: the check WAS ~90 lines of M1 walking the
+// Unicode lead/continuation table one byte at a time (sh_utf8_ok, sh_u8_more,
+// sh_u8_step), because the bridge had no is-utf8 predicate and M1 has no
+// byte-width load. It now calls the predicate, which shares std::str::from_utf8
+// with bytes_to_text — so the guard cannot drift stricter than the converter it
+// guards, which is the ASCII-narrowing failure the refusal suite's last arm
+// exists to catch. The refusal itself is unchanged: same status, same message,
+// same connection.
+//
+// Every refusal below answers on the connection the client is already holding.
+// Nothing here can reach a panic, so nothing here can respawn the entry onto a
+// different port and strand an in-flight caller (R20).
+fn sh_serve_step(sptr: Int) -> Int {
+  let conn = mem_read_int_raw(sptr, Int(8))
+  let buf  = mem_read_int_raw(sptr, Int(16))
+  let k    = mem_read_int_raw(sptr, Int(200))
+  let plen = sh_recv_frame(conn, sptr)
+  let hdrw = mem_read_int_raw(sptr, Int(40))
+
+  let gone = int_lt(plen, Int(0))
+  let _g   = if gone { mem_write_int_raw(sptr, Int(88), Int(0)) }
+             else    { io_print(Text("")) }
+  let _og  = if int_eq(plen, int_sub(Int(0), Int(2))) { sh_reply(conn, Int(1), Text("OVERSIZE frame exceeds the shim's fixed buffer")) }
+             else                     { io_print(Text("")) }
+
+  let empty = bool_and(bool_not(gone), int_eq(plen, Int(0)))
+  let _em   = if empty { sh_reply(conn, Int(1), Text("MALFORMED empty frame")) }
+              else     { io_print(Text("")) }
+
+  // AXVERITY_SHIM_CONCURRENT_CONNS_V1: a live frame is answered by the ONE index thread (it owns the
+  // projection, which is thread-local), never here; this thread only carries bytes for its own conn.
+  let live = bool_and(bool_not(gone), int_gt(plen, Int(0)))
+  let _f = if live {
+    let meta  = str_concat(int_to_str(k), str_concat(chr(Int(9)), str_concat(int_to_str(plen), str_concat(chr(Int(9)), int_to_str(hdrw)))))
+    let frame = mem_read_raw(buf, Int(0), int_add(hdrw, plen))
+    let _s    = bchan_send(Text("sh-idx"), value_make(meta, frame))
+    let out   = value_to_bytes(bchan_take(str_concat(Text("sh-a:"), int_to_str(k))))
+    tcp_write(conn, out)
+  } else { Unit() }
+  int_add(sptr, Int(0))
+}

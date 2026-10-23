@@ -1,0 +1,148 @@
+// hot_mem_write — one of the slice's 5 --entries threads. Reads the input
+// file and stages it into raw memory ITSELF, in one shot (fs_read_bytes then
+// a single mem_write_raw) — this is the most time-sensitive layer in the
+// pipeline, so there is no channel hop for the bytes at all.
+//
+// AXVERITY_FORMAT_LAND_AND_WIRE_V1 changed what the input IS. It was an
+// undelimited byte stream, chunked at fixed capacity boundaries; it is now a
+// length-prefixed record stream (8-byte native-endian length, then the bytes),
+// because F1v frames records and records have to come from somewhere. argv[2]
+// changed with it: it was the number of block-fulls, it is now the number of
+// RECORDS. The block count is no longer derivable from the input's size — it
+// depends on how records pack and how they route — so it is computed here.
+//
+// THE COUNTING PASS. Every thread in this pipeline is bounded by an exact
+// loop_count, which is what lets the process exit normally instead of needing
+// a shutdown protocol. So the packer runs twice: once with dry=1, which does
+// all the same routing and framing arithmetic and counts the seals but claims
+// no pool block and signals nothing, and then again for real. Using the SAME
+// fn for both is the point — a separately-written estimator could disagree
+// with the packer, and a block count that is one too low leaves three threads
+// blocked forever on a seal that never comes.
+//
+// The two staging buffers are this thread's own private memory, like the input
+// staging above. They exist because S2's two streams fill concurrently and a
+// pool block is claimed only at seal time; see wp_seal_stream. Each carries 64
+// bytes of slack past its capacity because the varint is written with an
+// 8-byte mem_write_int_raw whose unused tail the payload copy overwrites.
+fn hot_mem_write_main(argv: TextList) -> Unit {
+  let path  = argv_get(Int(1))
+  let nrec  = str_to_int(argv_get(Int(2)))
+
+  let cap   = wp_block_capacity(Unit())
+  let fsz   = wp_footer_size(Unit())
+  let pcap  = int_sub(cap, fsz)
+
+  // The POLICY record limit, read ONCE here rather than per record: wp_cfg_get
+  // touches the filesystem, and wp_write_step runs once per record. It reaches
+  // the packer through the scratch at slot 104, exactly as pcap does at 32.
+  //
+  // AXVERITY_SPAN_RESTORE: the two structural guards that used to live here are
+  // GONE, because the thing they protected against no longer happens. A record
+  // too large for a block, or too long for the three-byte length prefix, now
+  // SPANS — written unframed across consecutive blocks of its own stream — so
+  // there is nothing to refuse and nothing to clamp. What is left is
+  // wp_max_record, which is policy and belongs to whoever runs this.
+  let mrec  = wp_max_record(Unit())
+
+  let input = fs_read_bytes(path)
+  let ilen  = bytes_len(input)
+  let ires  = mem_reserve_raw(ilen)
+  let iptr  = tuple_field(ires, Int(0))
+  let _iw   = mem_write_raw(iptr, Int(0), input)
+
+  let sres  = mem_reserve_raw(int_add(cap, Int(64)))
+  let sbuf  = tuple_field(sres, Int(0))
+  let pres  = mem_reserve_raw(int_add(cap, Int(64)))
+  let pbuf  = tuple_field(pres, Int(0))
+  let xres  = mem_reserve_raw(Int(224))
+  let sptr  = tuple_field(xres, Int(0))
+
+  let _x0 = mem_write_int_raw(sptr, Int(0),  iptr)
+  let _x1 = mem_write_int_raw(sptr, Int(8),  ilen)
+  let _x2 = mem_write_int_raw(sptr, Int(16), Int(0))
+  let _x3 = mem_write_int_raw(sptr, Int(24), wp_stream_threshold(Unit()))
+  let _x4 = mem_write_int_raw(sptr, Int(32), pcap)
+  let _x5 = mem_write_int_raw(sptr, Int(40), sbuf)
+  let _x6 = mem_write_int_raw(sptr, Int(48), Int(0))
+  let _x7 = mem_write_int_raw(sptr, Int(56), pbuf)
+  let _x8 = mem_write_int_raw(sptr, Int(64), Int(0))
+  let _x9 = mem_write_int_raw(sptr, Int(72), Int(1))
+  let _xa = mem_write_int_raw(sptr, Int(80), Int(0))
+  let _xb = mem_write_int_raw(sptr, Int(88), Int(0))
+  let _xc = mem_write_int_raw(sptr, Int(96), Int(0))
+  let _xd = mem_write_int_raw(sptr, Int(104), mrec)
+  // Pending footers start at the -1 that has always meant "no continuation".
+  let _xe = mem_write_int_raw(sptr, Int(112), int_sub(Int(0), Int(1)))
+  let _xf = mem_write_int_raw(sptr, Int(120), int_sub(Int(0), Int(1)))
+
+  // AXVERITY_EXTENT_WRITE_PATH step 5a — THE COUNTING PASS IS GONE.
+  //
+  // It existed to publish an exact block count, because every downstream
+  // thread was bounded by one. That was sound only while sealing was
+  // DETERMINISTIC: a block ended exactly where the next record would not fit,
+  // so a dry run over the same input produced the same count.
+  //
+  // The SLA tick breaks that. A tick seals a PARTIAL block, so the number of
+  // blocks a run produces depends on how many ticks landed while it was
+  // packing — the dry pass, which has no ticks, would always compute the
+  // block-full-only count, and the real pass would produce that many or more.
+  // Every consumer stopped at the count, so the extra blocks were never
+  // forwarded, never written, never acked, and whoever waited on them parked
+  // forever. Silently: no error, no short write.
+  //
+  // The pipeline is bounded by an END-OF-STREAM SENTINEL now, which cannot
+  // drift from reality because it IS reality: it is posted after the last
+  // seal actually happens. The bound stopped being a prediction.
+  //
+  // Deleting the counting pass also retires wp_count_step, which existed only
+  // to keep two identical loop_count calls from being hash-consed into one
+  // (CLAUDE.md 6b). With one pass there is nothing to collide with.
+
+  // Live pass. `dry` is cleared here rather than at init so the scratch
+  // layout above stays the one wp_write_step and wp_seal_stream document.
+  let _r4 = mem_write_int_raw(sptr, Int(72), Int(0))
+  let _d1 = loop_count(nrec, sptr, wp_write_step)
+  let _d2 = wp_flush_tail(sptr)
+
+  // END OF STREAM. Every seal this run will ever produce has now happened, so
+  // the sentinel is posted on the same channel the seals travelled, behind
+  // them, and propagates down the chain: mem_controller -> wp-dc ->
+  // disk_controller -> wp-flush -> flusher -> wp-durable-advance -> ack_bench.
+  // Each stage forwards it and stops. sel = -1 is unambiguous: a real seal
+  // carries a stream selector of 0 or 1.
+  let _eos = bchan_send(Text("wp-seal-done"), list_of_2(int_sub(Int(0), Int(1)), int_sub(Int(0), Int(1))))
+
+  // Oversize records are only knowable AFTER the pass that saw them, now that
+  // there is no dry run. The count is read here rather than above, and the
+  // run still fails loudly and non-zero — just after the work rather than
+  // before it.
+  let over = mem_read_int_raw(sptr, Int(88))
+  // ONE bound to name now. The block capacity and the framing ceiling stopped
+  // being limits when spanning came back; a record is refused only when it
+  // exceeds what this deployment configured.
+  //
+  // AXVERITY_W2_ADMIT_HANDLE_V1 G3 — THE SAME LINE GOES TO A FILE AS WELL AS TO
+  // STDOUT. The transport spawns this process and reads only its exit code
+  // (shim/lib/sh_admit.m1), so a client refused for an oversize record was told
+  // that it was refused and never told the limit it broke — a number this
+  // process has in hand at the moment it refuses. stdout could not carry it
+  // without a capture primitive; a file in the store the shim already owns can,
+  // and does. The shim TRUNCATES this path before every spawn, so an empty file
+  // means "this run named no reason" and never means a previous run's reason.
+  let msg  = str_concat(Text("records_too_large="),
+               str_concat(int_to_str(over),
+                 str_concat(Text(" max_record="), int_to_str(mrec))))
+  let _e   = if int_gt(over, Int(0)) {
+               io_println(str_concat(Text("FATAL "), msg))
+             } else {
+               io_print(Text(""))
+             }
+  let _ef  = if int_gt(over, Int(0)) {
+               fs_write_text(Text(".axverity-store/writer.err"), msg)
+             } else {
+               io_print(Text(""))
+             }
+  let _x  = if int_gt(over, Int(0)) { proc_exit(Int(1)) } else { io_print(Text("")) }
+  Unit()
+}

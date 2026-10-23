@@ -1,0 +1,49 @@
+// rt_seal — the SEAL half of APPEND_ONLY_PLUS_SEALED_SORT. Sort each
+// projection into its own key order, once, at the first read after a write.
+//
+// THE KEY ORDER IS THE ROTATION. All three arrays hold the identical record
+// (s, v, t); the only thing that distinguishes rt:B from rt:A is the
+// permutation passed here. The bridge has no rotation logic and needs none.
+//
+// THE DIRTY TEST IS THE LENGTH, not a flag written on the insert path. A push
+// is the only thing that can change a length and it only ever increases it, so
+// "the total differs from the total we last sorted" is exactly "something was
+// appended since". Recording it in a flag instead would put a map_put on the
+// per-triple ingest path — ~40 ns of Text hashing per triple to learn something
+// the arrays already know for free.
+//
+// THE TOTAL IS ALL THREE LENGTHS, NOT rt:A's. rt_index_triple pushes to all
+// three or to none, so rt:A's length alone would answer correctly today — but
+// that is an invariant of a fn that could change, and rt_vcount one file over
+// already declines to assume it for exactly this reason. A writer that touched
+// one array would move the sum and be sorted; under rt:A's length alone it
+// could leave two arrays unsorted while the token read clean, and an unsorted
+// array does not fail a binary search, it answers it wrongly. Three u32v_len
+// per query against that: the same skepticism, at the same price rt_vcount
+// already pays.
+//
+// rt_proj_reset writes sealed=0 alongside its u32v_new, so an emptied tier is
+// consistent rather than merely stale: total 0 == sealed 0, no sort, and no
+// u32v_get is reachable because every range over an empty array is empty.
+//
+// A re-sort is the WHOLE array, not the tail, so interleaving one insert
+// between every query is O(n log n) per query. That is the shape the query
+// suites exercise (five triples), not the shape a build has: rt_populate and
+// rt_rebuild append everything and seal once.
+fn rt_seal(u: Unit) -> Unit {
+  let la  = u32v_len(Text("rt:A"))
+  let lb  = u32v_len(Text("rt:B"))
+  let lc  = u32v_len(Text("rt:C"))
+  let len = int_add(la, int_add(lb, lc))
+  let s0  = map_get(Text("rt:proj"), Text("sealed"))
+  let sl  = if str_eq(s0, Text("")) { int_add(Int(0), Int(0)) } else { str_to_int(s0) }
+  let _d  = if int_eq(len, sl) {
+              bool_or(Bool(false), Bool(false))
+            } else {
+              let _a = u32v_sort3(Text("rt:A"), Int(0), Int(1), Int(2))
+              let _b = u32v_sort3(Text("rt:B"), Int(1), Int(2), Int(0))
+              let _c = u32v_sort3(Text("rt:C"), Int(2), Int(0), Int(1))
+              map_put(Text("rt:proj"), Text("sealed"), int_to_str(len))
+            }
+  Unit()
+}

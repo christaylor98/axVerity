@@ -1,0 +1,12 @@
+// rt_bs_more — loop_while's condition for the M1-side binary search: is the
+// candidate window still non-empty?
+//
+// Threading the scratch POINTER as the loop state is what keeps this cheap.
+// loop_while clones its accumulator on every iteration (iter.rs:78), so an
+// accumulator carrying anything structural would be copied per probe; an Int
+// clone is free and the window itself lives in raw memory that is never named.
+fn rt_bs_more(p: Int) -> Bool {
+  let lo = mem_read_int_raw(p, Int(0))
+  let hi = mem_read_int_raw(p, Int(8))
+  int_lt(lo, hi)
+}

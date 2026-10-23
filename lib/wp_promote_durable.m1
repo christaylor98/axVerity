@@ -1,0 +1,36 @@
+// NESTED_IF_WORKAROUND (FORCED): contains its own if and must not be inlined
+// into a branch. Revert scope — grep NESTED_IF_WORKAROUND.
+//
+// wp_promote_durable — promote the appended mark to the DURABLE watermark, and
+// wake anything waiting on it.
+//
+// AXVERITY_EXTENT_WRITE_PATH. Called only after a slab_tick sweep has actually
+// fsynced, or from wp_flusher_eos after an explicit seal. Splitting "appended"
+// from "durable" is the whole point: under 5d the append and the fsync are
+// different events, so a single counter cannot honestly mean both.
+//
+// Monotonic set-to-max rather than a +1 step (step 5c): one sweep covers every
+// block appended since the last one, so the watermark can jump by more than
+// one and a strict increment would fail silently and park every
+// wp_wait_durable caller forever. No retry loop — the flusher is the only
+// writer of either cell.
+//
+// The notification is posted after the cell moves, never before: a waiter woken
+// first would recheck, still find its target unreached, and park again.
+fn wp_promote_durable(_u: Unit) -> Unit {
+  let apc  = bchan_take(Text("wp-appended-cell"))
+  let _apb = bchan_send(Text("wp-appended-cell"), apc)
+  let app  = cell_load_raw(apc)
+
+  let wmc  = bchan_take(Text("wp-durable-cell"))
+  let _wmb = bchan_send(Text("wp-durable-cell"), wmc)
+  let cur  = cell_load_raw(wmc)
+
+  let _adv = if int_gt(app, cur) {
+               let _c = cell_cas_raw(wmc, cur, app)
+               bchan_send(Text("wp-durable-advance"), app)
+             } else {
+               io_print(Text(""))
+             }
+  Unit()
+}

@@ -1,0 +1,32 @@
+// rt_coldbench — rebuild from the durable store, then time every binding
+// pattern and the point-read path against the rebuilt structures.
+//
+// The patterns are timed with the SAME rt_bench_pattern the RAM tier was
+// measured with, on structures that arrived from disk instead of from
+// rt_populate. That is the point: if a query is slower after a cold start than
+// it was in RAM, the difference is in the rebuild, not in the traversal —
+// nothing about a projection remembers where its triples came from.
+//
+// Order matters and is the reverse of the mistake the RAM sweep already
+// documented: an earlier rt_bench_all ran allocation-heavy modes before the
+// pattern timings and measured the resulting heap as much as the structures,
+// producing a 5.9x rise that looked exactly like a superlinear descent and was
+// not. The rebuild here necessarily allocates at population scale before
+// anything is timed, so these numbers carry that same caveat and the RAM
+// column beside them is what they should be read against.
+fn rt_coldbench(_u: Unit) -> Int {
+  let n   = str_to_int(map_get(Text("rt:d"), Text("n")))
+  let _rb = rt_rebuild(Unit())
+  let _e  = io_println(str_concat(Text("entities="), int_to_str(rt_nidx_distinct(Unit()))))
+
+  let _q1 = rt_bench_pattern(Int(1), n, Int(1000))   // S??
+  let _q4 = rt_bench_pattern(Int(4), n, Int(1000))   // ??T
+  let _q3 = rt_bench_pattern(Int(3), n, Int(1000))   // SV?
+  let _q6 = rt_bench_pattern(Int(6), n, Int(1000))   // ?VT
+  let _q5 = rt_bench_pattern(Int(5), n, Int(1000))   // S?T
+  let _q7 = rt_bench_pattern(Int(7), n, Int(1000))   // SVT
+  let _q2 = rt_bench_pattern(Int(2), n, Int(20))     // ?V?  result-proportional
+  let _q0 = rt_bench_pattern(Int(0), n, Int(3))      // ???  result-proportional
+  let _rd = rt_bench_read(Int(1000))
+  int_add(Int(0), Int(0))
+}

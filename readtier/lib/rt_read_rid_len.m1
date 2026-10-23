@@ -1,0 +1,32 @@
+// rt_read_rid_len — the byte length of the record a locator names, or -1 if
+// that block is not durable.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b: O(1) for a framed record. This used to
+// stage the ENTIRE block into raw memory and walk records counting to an
+// ordinal — 25.3 ms of staging on a full 16 MiB block before the first scan
+// step, then 5.77 us per ordinal. It reads three bytes now.
+//
+// For a SPANNING record it is O(blocks in the chain), one 8-byte footer read
+// each, because that record's length is not stored anywhere — it is derived by
+// walking, which is what keeps the three-byte prefix sufficient. It was
+// previously answered by decoding a length prefix that does not exist at a
+// spanning record's offset 0, which returned whatever its first body byte
+// happened to be; see rt_read_rid.
+fn rt_read_rid_len(rid: Int) -> Int {
+  let stride = rt_rid_stride(Unit())
+  let off    = int_mod(rid, stride)
+  let t      = int_div(rid, stride)
+  let stream = int_mod(t, Int(2))
+  let blk    = int_div(t, Int(2))
+  let path   = rt_dblk_path(stream, blk)
+
+  let have   = int_gt(str_len(path), Int(0))
+  let foot   = if have { rt_span_footer(path, stride) } else { int_sub(Int(0), Int(1)) }
+  let norm   = int_eq(foot, int_sub(Int(0), Int(1)))
+  let flags  = if norm { Int(0) } else { int_div(foot, Int(4294967296)) }
+  let span   = bool_and(bool_and(have, int_eq(off, Int(0))),
+                 bool_or(int_eq(flags, Int(2)), int_eq(flags, Int(4))))
+
+  let out = if span { rt_span_total(stream, blk) } else { rt_frame_len(path, off) }
+  int_add(out, Int(0))
+}

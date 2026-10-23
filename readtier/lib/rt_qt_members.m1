@@ -1,0 +1,46 @@
+// rt_qt_members — cardinality alone would pass for a structure that returned
+// the right NUMBER of wrong triples. These assert the actual membership of the
+// returned sets, in canonical S,V,T id form, including triples that must NOT
+// be present.
+//
+// Fixture ids: a=0 likes=1 b=2 c=3 knows=4 d=5 hates=6 e=7.
+fn rt_qt_members(u: Unit) -> Int {
+  let t1 = rt_key3(Text("0"), Text("1"), Text("2"))
+  let t2 = rt_key3(Text("0"), Text("1"), Text("3"))
+  let t3 = rt_key3(Text("0"), Text("4"), Text("2"))
+  let t4 = rt_key3(Text("5"), Text("1"), Text("2"))
+  let t5 = rt_key3(Text("5"), Text("6"), Text("7"))
+
+  let _q1 = rt_q_sxx(Text("a"))
+  let a1  = rt_expect_bool(Text("m/S?? a has (a,likes,b)"),   rt_out_has(t1), Bool(true))
+  let a2  = rt_expect_bool(Text("m/S?? a has (a,likes,c)"),   rt_out_has(t2), Bool(true))
+  let a3  = rt_expect_bool(Text("m/S?? a has (a,knows,b)"),   rt_out_has(t3), Bool(true))
+  let a4  = rt_expect_bool(Text("m/S?? a lacks (d,likes,b)"), rt_out_has(t4), Bool(false))
+
+  let _q2 = rt_q_xvx(Text("likes"))
+  let b1  = rt_expect_bool(Text("m/?V? likes has (a,likes,b)"), rt_out_has(t1), Bool(true))
+  let b2  = rt_expect_bool(Text("m/?V? likes has (d,likes,b)"), rt_out_has(t4), Bool(true))
+  let b3  = rt_expect_bool(Text("m/?V? likes lacks (a,knows,b)"), rt_out_has(t3), Bool(false))
+
+  let _q3 = rt_q_xxt(Text("b"))
+  let c1  = rt_expect_bool(Text("m/??T b has (a,knows,b)"),   rt_out_has(t3), Bool(true))
+  let c2  = rt_expect_bool(Text("m/??T b lacks (a,likes,c)"), rt_out_has(t2), Bool(false))
+
+  let _q4 = rt_q_sxt(Text("d"), Text("e"))
+  let d1  = rt_expect_bool(Text("m/S?T d e has (d,hates,e)"), rt_out_has(t5), Bool(true))
+  let d2  = rt_expect_text(Text("m/S?T d e sole member"),     rt_out_at(Int(0)), t5)
+
+  let _q5 = rt_q_xvt(Text("likes"), Text("b"))
+  let e1  = rt_expect_bool(Text("m/?VT likes b has (a,likes,b)"), rt_out_has(t1), Bool(true))
+  let e2  = rt_expect_bool(Text("m/?VT likes b has (d,likes,b)"), rt_out_has(t4), Bool(true))
+  let e3  = rt_expect_bool(Text("m/?VT likes b lacks (a,likes,c)"), rt_out_has(t2), Bool(false))
+
+  let _q6 = rt_q_svt(Text("a"), Text("knows"), Text("b"))
+  let f1  = rt_expect_text(Text("m/SVT returns the triple itself"), rt_out_at(Int(0)), t3)
+
+  let s1 = int_add(int_add(a1, a2), int_add(a3, a4))
+  let s2 = int_add(int_add(b1, b2), int_add(b3, c1))
+  let s3 = int_add(int_add(c2, d1), int_add(d2, e1))
+  let s4 = int_add(int_add(e2, e3), f1)
+  int_add(int_add(s1, s2), int_add(s3, s4))
+}

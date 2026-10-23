@@ -1,0 +1,11 @@
+// wp_wait_durable_more — loop_while condition for wp_wait_durable: keep
+// looping while the tracked durable watermark has NOT yet reached the
+// caller's target seq. state = "<cell> FS <target>" (see
+// wp_wait_durable.m1's header for why Text/FS, not a Value/list).
+fn wp_wait_durable_more(state: Text) -> Bool {
+  let fs     = chr(Int(28))
+  let cell   = str_to_int(str_before(state, fs))
+  let target = str_to_int(str_after(state, fs))
+  let cur    = cell_load_raw(cell)
+  bool_not(int_gte(cur, target))
+}

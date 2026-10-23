@@ -1,0 +1,30 @@
+// NESTED_IF_WORKAROUND (FORCED): contains 3 ifs that cannot sit inside a branch.
+// Revert scope for the in-flight compiler fix — grep NESTED_IF_WORKAROUND. See CLAUDE.md section 2.
+// wp_dc_drain_one — take one message during a coalesce pass and forward it if
+// it carries work. Called only when wp_dc_drain_step has just seen a non-empty
+// queue.
+//
+// A tick drained here is discarded: it is the same instruction as the tick
+// that opened the pass, and the pass has not acted on it yet. A write is
+// forwarded immediately and the sentinel is forwarded and reported upward,
+// because neither is redundant.
+fn wp_dc_drain_one(kmax: Int) -> Int {
+  let msg = bchan_take(Text("wp-dc"))
+  let k   = list_get(msg, Int(0))
+  let _f  = if int_eq(k, Int(1)) {
+              bchan_send(Text("wp-flush"), list_get(msg, Int(1)))
+            } else {
+              io_print(Text(""))
+            }
+  let _t  = if int_eq(k, Int(0)) {
+              bchan_send(Text("wp-flush"), list_of_1(int_sub(Int(0), Int(2))))
+            } else {
+              io_print(Text(""))
+            }
+  let _e  = if int_eq(k, Int(2)) {
+              bchan_send(Text("wp-flush"), list_of_1(int_sub(Int(0), Int(1))))
+            } else {
+              io_print(Text(""))
+            }
+  if int_gt(k, kmax) { int_add(k, Int(0)) } else { int_add(kmax, Int(0)) }
+}

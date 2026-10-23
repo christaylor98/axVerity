@@ -1,0 +1,16 @@
+// sh_serve_conn — serve one accepted connection to exhaustion, then close it.
+//
+// A read bound is set once here rather than per frame. Without it a client that
+// connects and never finishes a request would hold its accept thread for good.
+// sh_acceptor runs the accept loop on several threads sharing one listener, and
+// this thread serves its connection to completion; a stuck client costs one of
+// those threads, not a slow caller (net.rs' own note on tcp_set_read_timeout).
+// The timeout surfaces as EOF, which is already the loop's exit.
+fn sh_serve_conn(sptr: Int, conn: Int) -> Int {
+  let _t = tcp_set_read_timeout(conn, Int(30000))
+  let _c = mem_write_int_raw(sptr, Int(8),  conn)
+  let _l = mem_write_int_raw(sptr, Int(88), Int(1))
+  let _s = loop_while(sptr, sh_serve_more, sh_serve_step, Int(1000000000))
+  let _x = tcp_close(conn)
+  int_add(conn, Int(0))
+}

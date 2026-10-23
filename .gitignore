@@ -1,0 +1,39 @@
+# --- axVerity DB data (single-folder rule — see CLAUDE.md) ---
+/.axverity-store/
+
+# --- build artifacts ---
+/build/
+/lib_coreir/
+/harness/target/
+/experiments/*/target/
+# Nested Rust harnesses under a probe dir (experiments/format/harness/target/)
+# are NOT matched by the line above — it only reaches one level down.
+experiments/**/target/
+# Probe build outputs. Every experiments/*/build.sh recreates both dirs
+# from lib/, src/ and its own .axreg, so only those are worth tracking.
+/experiments/*/build/
+/experiments/*/lib_coreir/
+# ...and one level deeper, for a probe nested inside an experiment directory
+# (experiments/threshold/cdc-m1/build/). Same gap the `**/target/` line above
+# exists to close.
+experiments/**/build/
+experiments/**/lib_coreir/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+/readtier/build/
+/readtier/lib_coreir/
+/shim/build/
+/shim/lib_coreir/
+__pycache__/
+tmp/wire-harness/
+wire-harness/findings/
+
+# Worktree setup symlinks these to the main checkout; "dir/" patterns do not match symlinks.
+/.axverity-store
+lib_coreir
+/.axchat/gpu/

@@ -1,0 +1,25 @@
+// rt_dblk_path — the file a (stream, block) pair lives in, or "" if absent.
+//
+// AXVERITY_EXTENT_WRITE_PATH step 5b: the stream is a PARAMETER now, so this
+// COMPUTES the path instead of guessing it. It used to take a block id alone
+// and probe structure then payload, returning whichever existed — which cost
+// up to two fs_file_exists calls, measured at 1,657 ns (miss) and 1,847 ns
+// (hit). A payload point lookup therefore spent ~3.5 us deciding which
+// directory to open, against a 676 ns pread of the record itself: the guess
+// was five times the read.
+//
+// It was also about to become WRONG. slablock mints a per-handle sequence, so
+// with one handle per stream both directories hold blk-0 (measured directly).
+// Two distinct blocks would answer to one id and the probe order would pick
+// one silently — structure first, shadowing payload.
+//
+// One fs_file_exists remains, and it answers a real question ("is this block
+// durable yet?"), not a guess about where it lives.
+fn rt_dblk_path(stream: Int, blk: Int) -> Text {
+  let dir = if int_gt(stream, Int(0)) { Text(".axverity-store/payload") }
+            else                      { Text(".axverity-store/structure") }
+  let p   = str_concat(dir, str_concat(Text("/block-"),
+              str_concat(int_to_str(blk), Text(".bin"))))
+  let r   = if fs_file_exists(p) { str_concat(p, Text("")) } else { Text("") }
+  str_concat(r, Text(""))
+}

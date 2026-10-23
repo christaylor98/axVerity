@@ -1,0 +1,26 @@
+// rt_pop_step — one triple of the synthetic population, as a foreach callback.
+//
+// The shape is chosen so that six of the eight binding patterns have a
+// population-INDEPENDENT answer size, which is what makes a flat ns/op a
+// meaningful linearity test rather than an artefact:
+//
+//   s = "s" + i/4        each source has exactly 4 triples   -> S?? returns 4
+//   v = "v" + i mod 7    seven verbs                         -> ?V? returns n/7
+//   t = "t" + i mod n/4  each target appears exactly 4 times -> ??T returns 4
+//
+// 7 is coprime with the 4-strides, so within a source's 4 triples the verbs
+// are distinct and within a target's 4 occurrences the verbs are distinct too:
+// SV?, S?T, ?VT and SVT all return exactly 1 at every population.
+//
+// ?V? and ??? are result-proportional BY DEFINITION — they ask for n/7 and n
+// triples — so their per-call cost must grow. Their flat number is ns per
+// RESULT, reported separately.
+fn rt_pop_step(i: Int) -> Int {
+  let n     = str_to_int(map_get(Text("rt:bench"), Text("n")))
+  let tcard = int_max(Int(1), int_div(n, Int(4)))
+  let s     = str_concat(Text("s"), int_to_str(int_div(i, Int(4))))
+  let v     = str_concat(Text("v"), int_to_str(int_mod(i, Int(7))))
+  let t     = str_concat(Text("t"), int_to_str(int_mod(i, tcard)))
+  let r     = rt_insert_names(s, v, t)
+  int_add(r, Int(0))
+}

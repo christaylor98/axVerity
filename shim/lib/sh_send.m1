@@ -1,0 +1,19 @@
+// sh_send — write one frame: varint length prefix, then the payload.
+//
+// Same encoding as the durable format and as the request side. One tcp_write
+// per frame, so the length and its payload cannot be separated by an
+// interleaving writer — there is no interleaving writer, because the shim is
+// single-threaded and serves one operation at a time, but concatenating first
+// keeps that a property of the code rather than of the schedule.
+//
+// AXVERITY_SHIM_CONCURRENT_CONNS_V1 (2026-10-19): a NEGATIVE conn is not a socket. It is the index
+// thread answering for a connection thread that is waiting on its mailbox; the frame is appended to
+// the index thread's reply buffer (sh_rb_append) and handed over whole when the request is answered
+// (sh_index_step). A non-negative conn is written exactly as before.
+fn sh_send(conn: Int, payload: Bytes) -> Unit {
+  let n   = bytes_len(payload)
+  let hdr = sh_vi_enc(n)
+  let frame = bytes_concat(hdr, payload)
+  let _w  = if int_lt(conn, Int(0)) { sh_rb_append(frame) } else { tcp_write(conn, frame) }
+  Unit()
+}

@@ -1,0 +1,45 @@
+// sh_rebuild — the REBUILD verb, guarded, and the only thing that clears the
+// freshness gate.
+//
+// rt_rebuild folds fs_list_dir(".axverity-store/structure") unconditionally,
+// and fs_list_dir panics when the directory does not exist (io.rs:137). A store
+// that has never been admitted to therefore takes the entry down rather than
+// answering — round 1's R18. The panic is not the shim's to fix (rt_rebuild.m1
+// is in the forbidden tree) but the CALL is the shim's to decline, so it
+// declines it.
+//
+// The guard names the same directory rt_rebuild itself folds, and that layout
+// is published: §2.1 fixes S2's two streams as part of the durable artefact.
+// Knowing it is not a reach below §2-§5 — it IS §2. The shim still does not
+// create it: materialising store directories is the writer's job, and a
+// transport that quietly conjured an empty store would turn "nothing has been
+// written here" into "this store is empty", which are different facts.
+//
+// Refusal is out-of-contract, not transient, by §5.8's own test: retrying a
+// REBUILD against a store nobody has written will not help.
+//
+// ── CLEARING THE GATE (AXVERITY_W2_ADMIT_HANDLE_V1, G3) ─────────────────────
+// Slot 160 is the projection's freshness (see sh_query.m1). It is cleared HERE
+// and nowhere else, and only when rt_rebuild actually ran: a REBUILD refused
+// for NOSTORE has rebuilt nothing, so it must leave the gate exactly as it
+// found it. Clearing on the refusal path would make the first QUERY after a
+// failed REBUILD answer benignly, which is the defect this gate exists to
+// remove, reached by a different door.
+//
+// It takes the scratch rather than the connection now, for the same reason
+// sh_query does — the freshness bit lives there, and the connection is one
+// read away from it.
+fn sh_rebuild(sptr: Int) -> Int {
+  let conn  = mem_read_int_raw(sptr, Int(8))
+  let ready = fs_file_exists(Text(".axverity-store/structure"))
+  let r = if ready { rt_rebuild(Unit()) } else { int_sub(Int(0), Int(1)) }
+  let _c = if ready { mem_write_int_raw(sptr, Int(160), Int(0)) }
+           else     { io_print(Text("")) }
+  let _x = if ready {
+             sh_reply(conn, Int(0), int_to_str(r))
+           } else {
+             sh_reply(conn, Int(1),
+               Text("NOSTORE .axverity-store/structure does not exist — nothing has been admitted to this store"))
+           }
+  int_add(r, Int(0))
+}

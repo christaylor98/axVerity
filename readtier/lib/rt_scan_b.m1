@@ -1,0 +1,9 @@
+// rt_scan_b — walk [start, end) of rt:B, emitting every record.
+//
+// The 100M cap is a runaway backstop, not a bound on the data — rt_sc_more
+// ends the loop at `end`, which is itself a record index the search produced.
+// The same shape and the same reasoning as rt_dblk_scan's loop_while.
+fn rt_scan_b(p: Int) -> Int {
+  let _l = loop_while(p, rt_sc_more, rt_sc_b, Int(100000000))
+  int_add(p, Int(0))
+}

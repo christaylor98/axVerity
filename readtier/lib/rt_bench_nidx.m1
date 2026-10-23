@@ -1,0 +1,24 @@
+// rt_bench_nidx — W5 measurement of the name-index alone: n distinct names
+// resolved through rt_nidx_resolve, then n head lookups. Timed in M1 through
+// the real bridge (MEASURE_IN_THE_SHIPPING_SUBSTRATE) — a Rust microbenchmark
+// of the same structure would be measuring a different program.
+//
+// Both sweeps are foreach over range(0, n): the callback takes the element,
+// so no list is ever named inside a loop body.
+fn rt_bench_nidx(n: Int) -> Int {
+  let _r  = rt_nidx_reset(Unit())
+
+  let t0  = now_unix_nanos(Unit())
+  let _p  = foreach(range(Int(0), n), rt_nidx_pop_step)
+  let t1  = now_unix_nanos(Unit())
+  let _l  = foreach(range(Int(0), n), rt_nidx_lookup_step)
+  let t2  = now_unix_nanos(Unit())
+
+  let _a = io_println(str_concat(Text("nidx_insert_ns_per_op="),
+             int_to_str(int_div(int_sub(t1, t0), int_max(n, Int(1))))))
+  let _b = io_println(str_concat(Text("nidx_lookup_ns_per_op="),
+             int_to_str(int_div(int_sub(t2, t1), int_max(n, Int(1))))))
+  let _c = io_println(str_concat(Text("nidx_distinct="),
+             int_to_str(rt_nidx_distinct(Unit()))))
+  int_add(Int(0), Int(0))
+}

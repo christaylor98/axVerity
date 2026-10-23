@@ -1,0 +1,6 @@
+// rt_nidx_lookup_step — the lookup half of the name-index sweep, same foreach
+// shape as rt_nidx_pop_step.
+fn rt_nidx_lookup_step(i: Int) -> Int {
+  let id = rt_nidx_lookup(str_concat(Text("n"), int_to_str(i)))
+  int_add(id, Int(0))
+}
